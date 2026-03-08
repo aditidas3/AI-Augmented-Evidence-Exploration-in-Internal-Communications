@@ -1,0 +1,581 @@
+# =============================================================================
+# pre_kg_config.yaml
+# =============================================================================
+# 
+# HOW THIS WORKS:
+#   1. Edit this file to change any rule behaviour.
+#   2. Feed this file to an LLM with the prompt at the bottom of this file.
+#   3. The LLM generates rule_engine.py from these rules.
+#   4. pre_kg_rules.py imports rule_engine.py and runs the pipeline.
+#
+# RULE SEVERITY:
+#   violation  -> blocks pipeline, must be fixed before loading
+#   warning    -> logged only, pipeline continues
+#
+# **To disable any rule: set  enabled: false**
+# =============================================================================
+
+
+# ---------------------------------------------------------------------------
+# RULE SET — apply_structural_integrity
+# Every record must have the right shape before anything else runs.
+# ---------------------------------------------------------------------------
+rule_set_structural_integrity:
+
+  A1:
+    enabled: true
+    severity: violation
+    description: >
+      Every record must have a non-empty top-level 'id' field.
+      If missing, auto-generate one using sha256(file_type + record_index) and flag violation.
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    field: id
+    auto_fix: true
+
+  A2:
+    enabled: true
+    severity: violation
+    description: >
+      Every record must have an 'output' object (dict).
+      If missing or wrong type, replace with empty dict and flag violation.
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    field: output
+    auto_fix: true
+
+  A3:
+    enabled: true
+    severity: violation
+    description: >
+      EMAIL records must have a non-empty identifier and a hasPart list
+      with at least one item. Both are required for graph loading.
+    applies_to: [EMAIL]
+    required_fields:
+      - identifier
+      - hasPart                     # must be list, length >= 1
+
+  A4:
+    enabled: true
+    severity: warning
+    description: >
+      Records must have these fields present and non-empty inside output.
+      If missing replace with empty dict and flag warning.
+    applies_to: [DOC, PPT, XLS, TXT]
+    required_fields:
+      - url
+      - industry
+      - collection
+
+  A5:
+    enabled: true
+    severity: warning
+    description: >
+      Records must have these fields present and non-empty inside output.
+      If missing replace with empty dict and flag warning.
+    applied_to: [PPT, XLS, TXT]
+    required_fields:
+      -hasContent
+
+
+# ---------------------------------------------------------------------------
+# RULE SET — apply_format_normalization
+# Coerce values into consistent types/formats before UID assignment.
+# ---------------------------------------------------------------------------
+rule_set_format_normalization:
+
+  B1:
+    enabled: true
+    severity: warning
+    description: >
+      Normalize all date fields to ISO YYYY-MM-DD format.
+      Try each input format in order; keep original string if none match.
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    date_fields:
+      - documentDate
+      - dateAddedUCSF
+      - dateFiled
+    nested_date_fields:
+      - array_path: hasPart           # iterate output.hasPart[]
+        field: dateSent               # normalize this field inside each item
+    accepted_input_formats:
+      - "%Y-%m-%d"
+      - "%Y-%m-%dT%H:%M:%S"
+      - "%Y-%m-%dT%H:%M"
+      - "%m/%d/%Y"
+      - "%d/%m/%Y"
+    output_format: "%Y-%m-%d"
+
+  B2:
+    enabled: true
+    severity: warning
+    description: >
+      Validate and lowercase all email address fields.
+      An email is valid if it matches [^@]+@[^@]+\.[^@]+
+      Invalid emails are blanked out (not kept) and a warning is raised.
+    applies_to: [DOC, EMAIL]
+    contact_email_field: email        # field name inside contacts[]
+    message_sender_path: hasPart[].sender.email
+    message_recipient_path: hasPart[].recipient[].email
+    on_invalid: blank                 # blank | keep
+
+  B3:
+    enabled: true
+    severity: warning
+    description: >
+      Validate URLs. A URL is valid only if it starts with http:// or https://.
+      Invalid URLs are blanked out.
+    applies_to: [DOC, PPT, TXT, XLS]
+    url_fields:
+      - url                           # top-level output.url
+    nested_url_fields:
+      - links[].url
+      - contacts[].url
+    on_invalid: blank
+
+  B4:
+    enabled: true
+    severity: warning
+    description: >
+      Normalize the 'language' field to a list of lowercase strings.
+      If it is a plain string, wrap it in a list. If already a list,
+      lowercase each element.
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    field: language
+
+  B5:
+    enabled: true
+    severity: warning
+    description: >
+      Ensure sourceFile.pageCount is stored as a Python int.
+      Coerce from string if possible; warn and leave unchanged if not.
+    applies_to: [DOC, PPT, XLS, TXT]
+    field: sourceFile.pageCount
+    coerce_to: integer
+
+
+# ---------------------------------------------------------------------------
+# RULE SET — apply_uid_assignment
+# Every entity that will become a Neo4j node needs a stable uid
+# so that the same real-world entity in multiple documents MERGEs
+# to one node rather than creating duplicates.
+# All UIDs are sha256-based 12-character hex strings.
+# ---------------------------------------------------------------------------
+rule_set_uid_assignment:
+
+  C1:
+    enabled: true
+    description: >
+      Assign _uid to every item in output.contacts[].
+      Key preference: use email if valid, otherwise concatenate name+organization.
+      Store result in contact['_uid'].
+    applies_to: [DOC]
+    path: output.contacts[]
+    uid_field: _uid
+    uid_namespace: contact
+    key_preference:
+      - email
+      - name+organization
+
+  C2:
+    enabled: true
+    description: >
+      Assign _uid to every email message in output.hasPart[].
+      Key: sha256(identifier + subject + dateSent).
+      Store result in msg['_uid'].
+    applies_to: [EMAIL]
+    path: output.hasPart[]
+    uid_field: _uid
+    uid_namespace: email_msg
+    key_fields:
+      - identifier
+      - subject
+      - dateSent
+
+  C3:
+    enabled: true
+    description: >
+      Assign _uid to sender and each recipient inside every hasPart message.
+      Key preference: use email if valid, otherwise use name.
+      Applies to both hasPart[].sender and hasPart[].recipient[] items.
+    applies_to: [EMAIL]
+    uid_field: _uid
+    uid_namespace: person
+    paths:
+      - output.hasPart[].sender
+      - output.hasPart[].recipient[]
+    key_preference:
+      - email
+      - name
+
+  C4:
+    enabled: true
+    description: >
+      Assign _uid to drug entities found in output.drugs[] and
+      output.hasContent[].entities.drugs[].
+      Key preference: genericName, then name.
+    applies_to: [DOC, EMAIL]
+    uid_field: _uid
+    uid_namespace: drug
+    paths:
+      - output.drugs[]
+      - output.hasContent[].entities.drugs[]
+    key_preference:
+      - genericName
+      - name
+
+  C5:
+    enabled: true
+    description: >
+      Normalize output.sharedEntities.organization from a list of strings
+      to a list of dicts with {name, _uid}. Key: lowercased name.
+    applies_to: [XLS]
+    path: output.sharedEntities.organization
+    uid_field: _uid
+    uid_namespace: org
+
+  C6:
+    enabled: true
+    description: >
+      Assign _doc_uid to the record itself (the Document node uid).
+      Key preference: bates_number, then url, then record id.
+      Store at rec['_doc_uid'] (top-level, not inside output).
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    uid_field: _doc_uid             # stored on the record, not inside output
+    uid_namespace: doc
+    key_preference:
+      - output.bates_number
+      - output.url
+      - id                          # top-level record id as last resort
+
+
+# ---------------------------------------------------------------------------
+# RULE SET D  Graph-semantic rules
+# Validate values that directly affect graph structure:
+# enum fields, self-loop detection, required node label fields.
+# ---------------------------------------------------------------------------
+rule_set_graph_semantics:
+
+  D1:
+    enabled: true
+    severity: warning
+    description: >
+      contact_type must be exactly 'individual' or 'organization' (lowercase).
+      Any other value is replaced with the default and a warning is raised.
+    applies_to: [DOC]
+    field: output.contacts[].contact_type
+    allowed_values:
+      - individual
+      - organization
+    normalize: lowercase
+    default_on_invalid: individual
+
+  D2:
+    enabled: true
+    severity: warning
+    description: >
+      legalFramework.type must be one of the allowed enum values (lowercase).
+      Unknown values are kept as-is but a warning is raised.
+      NOTE: TXT is excluded here because it uses free-text types (see F7).
+    applies_to: [DOC, PPT, XLS]
+    field: output.legalFramework.type
+    normalize: lowercase
+    allowed_values:
+      - legislation_document
+      - contract
+      - regulatory
+      - other
+      - ""                          # empty string is allowed
+
+  D3:
+    enabled: true
+    severity: warning
+    description: >
+      For each message in hasPart, check whether the sender _uid equals
+      any recipient _uid. If so, raise a warning — this is likely a
+      data quality issue (self-sent email or data entry error).
+      C3 must run before D3 so uids are already assigned.
+    applies_to: [EMAIL]
+    path: output.hasPart[]
+    check: sender._uid != each recipient._uid
+
+  D4:
+    enabled: true
+    severity: warning
+    description: >
+      Every item in output.claims[] must have a non-empty 'subject' field,
+      which becomes the Claim node's primary label in the graph.
+      If missing, auto-fill from the first 60 chars of claim_text.
+      If claim_text is also missing, use the fallback string.
+    applies_to: [DOC]
+    path: output.claims[]
+    field: subject
+    auto_fix: true
+    fallback_source: claim_text
+    fallback_truncate: 60
+    fallback_default: unknown_subject
+
+  D5:
+    enabled: true
+    severity: warning
+    description: >
+      Within a single PPT record, every slide in hasContent.slides[]
+      must have a unique pageNumber. Duplicates suggest extraction errors.
+    applies_to: [PPT]
+    path: output.hasContent.slides[]
+    unique_field: pageNumber
+
+  D6:
+    enabled: true
+    severity: warning
+    description: >
+      Finance amount values in XLS hasContent[].semanticMentions.finances[]
+      should be stored as floats for numeric querying.
+      Strip commas before coercion (e.g. "1,200.50" -> 1200.50).
+      If coercion fails, keep the original value and do not warn.
+    applies_to: [XLS]
+    path: output.hasContent[].semanticMentions.finances[]
+    field: amount
+    coerce_to: float
+    strip_chars: ","
+
+
+# ---------------------------------------------------------------------------
+# RULE SET — apply_dedup_normalization
+# Normalize entity values so that the same entity in different documents
+# produces identical strings and therefore the same uid.
+# ---------------------------------------------------------------------------
+rule_set_dedup_normalization:
+
+  E1:
+    enabled: true
+    description: >
+      Deduplicate output.abbreviations[] by abbv_name within each record.
+      Comparison is case-insensitive (uppercase both sides).
+      Keep the first occurrence; discard subsequent duplicates.
+    applies_to: [DOC, EMAIL, PPT, XLS, TXT]
+    path: output.abbreviations[]
+    dedup_key: abbv_name
+    dedup_normalize: uppercase
+
+  E2:
+    enabled: true
+    description: >
+      Normalize topic strings in hasContent[].entities.topics[] to title-case
+      after stripping leading/trailing whitespace.
+      This ensures "tobacco industry" and "Tobacco Industry" merge to one Topic node.
+    applies_to: [DOC, PPT]
+    path: output.hasContent[].entities.topics[]
+    normalize:
+      - strip
+      - title_case
+
+  E3:
+    enabled: true
+    description: >
+      Normalize organization name strings in hasContent[].entities.organizations[]
+      by collapsing internal whitespace runs to a single space and stripping ends.
+    applies_to: [DOC, EMAIL, PPT]
+    path: output.hasContent[].entities.organizations[]
+    normalize:
+      - collapse_whitespace
+      - strip
+
+
+# ---------------------------------------------------------------------------
+# RULE SET — apply_txt_rules
+# TXT files have a unique structure (tabular CSV data, regulatory submissions)
+# that requires dedicated handling beyond the shared rules above.
+# ---------------------------------------------------------------------------
+rule_set_txt_rules:
+
+  F1:
+    enabled: true
+    description: >
+      TXT records must have output.sourceFile.fileName (warning if missing)
+      and output.hasContent must be a non-empty list (violation if empty).
+    applies_to: [TXT]
+    checks:
+      - field: output.sourceFile.fileName
+        severity: warning
+      - field: output.hasContent
+        must_be_nonempty_list: true
+        severity: violation
+
+  F2:
+    enabled: true
+    severity: warning
+    description: >
+      Every item in output.hasContent[] for TXT must have a non-empty 'title'.
+      Missing titles are flagged; no auto-fix applied.
+    applies_to: [TXT]
+    path: output.hasContent[]
+    required_field: title
+
+  F3:
+    enabled: true
+    severity: warning
+    description: >
+      Normalize creationDate and submittedDate inside each output.hasContent[]
+      item to ISO YYYY-MM-DD. These are different from top-level document dates.
+    applies_to: [TXT]
+    path: output.hasContent[]
+    date_fields:
+      - creationDate
+      - submittedDate
+    accepted_input_formats:
+      - "%Y-%m-%d"
+      - "%Y-%m-%dT%H:%M:%S"
+      - "%m/%d/%Y"
+
+  F4:
+    enabled: true
+    severity: warning
+    description: >
+      Coerce rowCount and columnCount inside each hasContent[].structure.tabular.dimensions
+      to Python int. These are required as integers for TabularColumn node creation.
+    applies_to: [TXT]
+    path: output.hasContent[].structure.tabular.dimensions
+    integer_fields:
+      - rowCount
+      - columnCount
+
+  F5:
+    enabled: true
+    severity: warning
+    description: >
+      Scan all cell values in hasContent[].structure.tabular.rows[].values
+      for the UCSF redaction marker. Count total redacted cells and raise
+      a single warning with the count. Also set hc['_has_redactions'] = True/False
+      on each hasContent item for use as the TextContent.hasRedactions node property.
+    applies_to: [TXT]
+    path: output.hasContent[].structure.tabular.rows[].values
+    redaction_marker: "UCSF Redaction"
+    flag_field: _has_redactions      # written to each hasContent item
+
+  F6:
+    enabled: true
+    severity: warning
+    description: >
+      Validate and lowercase inferredType for every column in
+      hasContent[].structure.tabular.columns[].
+      Unknown types are kept but flagged. Empty string is allowed.
+    applies_to: [TXT]
+    path: output.hasContent[].structure.tabular.columns[]
+    field: inferredType
+    normalize: lowercase
+    allowed_values:
+      - string
+      - integer
+      - number
+      - float
+      - boolean
+      - date
+      - datetime
+      - email
+      - url
+      - "null"
+      - unknown
+      - ""
+
+  F7:
+    enabled: true
+    severity: warning
+    description: >
+      TXT legalFramework.type is free-text (not a controlled enum like other types).
+      Normalize to lowercase and tag the object with _type_is_freetext: true
+      so the loader and D2 enum check know to skip validation for TXT records.
+    applies_to: [TXT]
+    field: output.legalFramework.type
+    normalize: lowercase
+    set_flag:
+      field: _type_is_freetext
+      value: true
+
+  F8:
+    enabled: true
+    description: >
+      Assign a stable _uid to each item in output.hasContent[] for TXT.
+      Key: sha256("txt_content" + textDocumentId + item_index).
+      This becomes the TextContent node uid in Neo4j.
+    applies_to: [TXT]
+    path: output.hasContent[]
+    uid_field: _uid
+    uid_namespace: txt_content
+    key_field: textDocumentId        # falls back to record id + index
+
+  F9:
+    enabled: true
+    description: >
+      Assign _uid to each organization dict inside hasContent[].entities.organizations[]
+      for TXT records. Key: sha256("org" + lowercased name).
+    applies_to: [TXT]
+    path: output.hasContent[].entities.organizations[]
+    uid_field: _uid
+    uid_namespace: org
+    key_field: name
+    key_normalize: lowercase
+
+  F10:
+    enabled: true
+    description: >
+      Strip trailing commas and collapse internal whitespace in org name strings
+      inside hasContent[].entities.organizations[] for TXT records.
+      This catches artifacts from CSV extraction.
+    applies_to: [TXT]
+    path: output.hasContent[].entities.organizations[]
+    field: name
+    normalize:
+      - collapse_whitespace
+      - strip
+      - rstrip_chars: ","
+
+
+# =============================================================================
+# LLM GENERATION PROMPT
+# =============================================================================
+# To regenerate rule_engine.py from this file, send this file to an LLM
+# with the following prompt:
+#
+#   "You are a Python code generator. Read the YAML rule definitions below.
+#    Generate a Python module called rule_engine.py that implements every
+#    enabled rule exactly as described.
+#
+#    Requirements:
+#    - The module must expose: apply_all_rules(rec, idx, file_type) -> rec
+#    - It must also expose module-level lists: VIOLATIONS, WARNINGS
+#    - And a module-level dict: STATS (defaultdict(int))
+#    - Use helper functions _str(), _ok(), _list(), _stable_id(), _norm_date(),
+#      _clean_email(), _clean_url() as internal helpers
+#
+#    FUNCTION NAMES — use the rule set names from this YAML exactly:
+#    - rule_set_structural_integrity  -> def apply_structural_integrity(rec, rid, file_type)
+#    - rule_set_format_normalization  -> def apply_format_normalization(rec, rid, file_type)
+#    - rule_set_uid_assignment        -> def apply_uid_assignment(rec, rid, file_type)
+#    - rule_set_graph_semantics       -> def apply_graph_semantics(rec, rid, file_type)
+#    - rule_set_dedup_normalization   -> def apply_dedup_normalization(rec, rid, file_type)
+#    - rule_set_txt_rules             -> def apply_txt_rules(rec, rid)
+#
+#    EXECUTION ORDER in apply_all_rules():
+#      apply_structural_integrity
+#      -> apply_format_normalization
+#      -> apply_uid_assignment
+#      -> apply_graph_semantics
+#      -> apply_dedup_normalization
+#      -> apply_txt_rules  (only when file_type matches the TXT document type)
+#
+#    ABOUT applies_to:
+#    - 'applies_to' lists document type tags, NOT filenames.
+#    - The caller passes file_type as a short tag (e.g. 'DOC', 'EMAIL', 'TXT').
+#    - The actual JSONL filename may be anything — the tag is what matters.
+#    - Each rule must check whether file_type is in its applies_to list
+#      before executing any logic.
+#    - The TXT tag identifies the text/tabular document type that gets
+#      apply_txt_rules applied; the exact tag value will be told to the
+#      LLM at generation time if it changes.
+#
+#    - Each rule respects its enabled flag
+#    - Violations are appended to VIOLATIONS list; warnings to WARNINGS list
+#    - Return the modified record at the end of apply_all_rules()
+#    - Do not import yaml — all rule parameters are baked into the Python code
+#    - The file should be standalone and importable with no external dependencies
+#      beyond the Python standard library"
+# =============================================================================
