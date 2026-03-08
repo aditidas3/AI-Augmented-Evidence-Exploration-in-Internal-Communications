@@ -82,7 +82,7 @@ def _check(name, status, detail="", count=0):
     entry = {"check": name, "status": status, "detail": detail, "count": count}
     REPORT["checks"].append(entry)
     icon = "✅" if status == "PASS" else ("⚠️ " if status == "WARN" else "❌")
-    print(f"  {icon}  [{status}] {name}" + (f" — {detail}" if detail else "") + (f" (n={count})" if count else ""))
+    print(f"  {icon}  [{status}] {name}" + (f" - {detail}" if detail else "") + (f" (n={count})" if count else ""))
 
 def _enrichment(rule, affected, category=None, detail=""):
     """
@@ -907,7 +907,7 @@ def main():
 
     # Write report
     with open(args.out, "w") as f:
-        json.dump(REPORT, f, indent=2)
+        json.dump(REPORT, f, indent=2, ensure_ascii=False)
 
     total_checks = len(REPORT["checks"])
     fails  = sum(1 for c in REPORT["checks"] if c["status"] == "FAIL")
