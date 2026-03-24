@@ -43,16 +43,6 @@ Node/property design
     sourceUrl   : exact API endpoint that was called
     fetchedAt   : ISO-8601 UTC timestamp of the API call
   }
-
-Usage
------
-  python external_libs.py \\
-      --uri      bolt://localhost:7687 \\
-      --user     neo4j \\
-      --password <pw> \\
-      [--source  rxnorm]      # default: all sources
-      [--limit   20]          # max Drug nodes per source (for testing)
-      [--dry-run]             # print what would happen, no Neo4j writes
 """
 
 import json
@@ -311,7 +301,7 @@ VOCAB_SOURCES = [
         "name":         "rxnorm",
         "type":         "standardized",
         "fetch_fn":     fetch_rxnorm,
-        "key_field":    "genericName",   # Drug node property used as lookup key
+        "key_field":    "name",          # Drug node property used as lookup key
         "known_fields": KNOWN_RXNORM_FIELDS,
         "description":  "NLM RxNorm — standardised drug identifiers and classifications",
     },
@@ -319,7 +309,7 @@ VOCAB_SOURCES = [
         "name":         "fda_orange_book",
         "type":         "regulatory",
         "fetch_fn":     fetch_fda_orange_book,
-        "key_field":    "genericName",
+        "key_field":    "name",
         "known_fields": KNOWN_FDA_OB_FIELDS,
         "description":  "FDA Orange Book — approved drug applications",
     },
