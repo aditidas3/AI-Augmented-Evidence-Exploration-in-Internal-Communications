@@ -3,13 +3,14 @@ kg_loader.py
 ============
 Loads cleaned JSONL files into Neo4j as a Knowledge Graph.
 
-STRONG keys (globally unique — safe to MERGE across documents):
+STRONG keys (globally unique - safe to MERGE across documents):
     Document     : record id
     Person       : email address
-    Drug         : genericName
+    Drug         : name (lowercased) — genericName removed from schema
     Organization : name (lowercased)
-    EmailMessage : identifier + subject + dateSent
-    Topic        : name
+    GPE          : name (lowercased) — new node type
+    EmailMessage : subject + dateSent — identifier removed from EMAIL schema
+    Topic        : topic_string (new field name, was plain string)
     Location     : name
 
 WEAK keys (sha256-derived — unique within our dataset but not guaranteed globally):
@@ -17,21 +18,12 @@ WEAK keys (sha256-derived — unique within our dataset but not guaranteed globa
     TextContent, TabularColumn, Product, Event, Finance, Metric,
     Risk, Requirement, Decision, DateMention, HealthMention,
     SignatureBlock, Figure, Link, CaseContext, SectionDetail,
-    VisualContent, TableRegion, PivotTable, Formula, Assessment,
-    Page, CellIndex, Identifier, EmbeddedObject, Procedure
+    TableRegion, PivotTable, Formula, Assessment,
+    CellIndex, Identifier, EmbeddedObject, Procedure
 
-Usage:
-    python kg_loader.py \\
-        --doc   clean/DOC_clean.jsonl \\
-        --email clean/EMAIL_clean.jsonl \\
-        --ppt   clean/PPT_clean.jsonl \\
-        --xls   clean/XLS_clean.jsonl \\
-        --txt   clean/TXT_clean.jsonl \\
-        --uri   neo4j+s://xxxxxxxx.databases.neo4j.io \\
-        --user  neo4j --password <pw> \\
-        [--dry-run] [--batch-size 200] [--limit 10]
 """
 
+import re
 import json
 import argparse
 import hashlib
@@ -76,9 +68,24 @@ def _kg_id(key_type, *parts):
     """
     Assign a kg_id with key_type tag so post-KG rules know
     whether this node was merged on a strong or weak key.
-    Returns (kg_id_string, key_type_string).
+    key_type examples: 'person_strong', 'person_weak', 'doc_strong', 'org_strong' etc.
+    Returns (kg_id_string, entity_type_string, confidence_string).
+    The _strong/_weak suffix is kept ONLY inside the hash so existing kg_id values stay stable.
+    It is never written as a visible property to Neo4j.
     """
-    return _sha(key_type, *parts), key_type
+    if "_" in key_type:
+        entity_type, confidence = key_type.rsplit("_", 1)
+        if confidence not in ("strong", "weak"):
+            entity_type, confidence = key_type, "strong"
+    else:
+        entity_type, confidence = key_type, "strong"
+    return _sha(key_type, *parts), entity_type, confidence
+
+
+def _kt(key_type):
+    """Return (entity_type, confidence) from a key_type string — convenience wrapper."""
+    _, et, conf = _kg_id(key_type)
+    return et, conf
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +248,7 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Person)        REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Organization)  REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Drug)          REQUIRE n.kg_id IS UNIQUE",
+    "CREATE CONSTRAINT IF NOT EXISTS FOR (n:GPE)           REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Topic)         REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Location)      REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:EmailMessage)  REQUIRE n.kg_id IS UNIQUE",
@@ -266,12 +274,10 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:PivotTable)    REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Formula)       REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Assessment)    REQUIRE n.kg_id IS UNIQUE",
-    "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Page)          REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Figure)        REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Link)          REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CaseContext)   REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SectionDetail) REQUIRE n.kg_id IS UNIQUE",
-    "CREATE CONSTRAINT IF NOT EXISTS FOR (n:VisualContent) REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Identifier)    REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:EmbeddedObject)REQUIRE n.kg_id IS UNIQUE",
     "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Procedure)     REQUIRE n.kg_id IS UNIQUE",
@@ -336,21 +342,21 @@ UPSERT_DOCUMENT = """
 UNWIND $rows AS r
 MERGE (d:Document {kg_id: r.kg_id})
 SET d.kg_key_type     = r.kg_key_type,
+    d.confidence      = r.confidence,
     d.uid             = r.uid,
     d.recordId        = r.recordId,
     d.fileType        = r.fileType,
     d.url             = r.url,
-    d.author          = r.author,
     d.documentDate    = r.documentDate,
     d.type            = r.type,
     d.industry        = r.industry,
-    d.country         = r.country,
     d.language        = r.language,
     d.summary         = r.summary,
     d.batesNumber     = r.batesNumber,
     d.collection      = r.collection,
     d.source          = r.source,
     d.tid             = r.tid,
+    d.dateAdded       = r.dateAdded,
     d.legalStatus     = r.legalStatus,
     d.sourceFileName  = r.sourceFileName,
     d.sourceFileType  = r.sourceFileType,
@@ -368,7 +374,7 @@ def load_documents(loader, records, file_type):
         rec_id = _s(rec.get("id"))
         # Strong key: record id is always present and pipeline-controlled.
         # bates_number may be absent — kept as a property but not the MERGE key.
-        kg_id, kg_key_type = _kg_id("doc_strong", file_type, rec_id)
+        kg_id, kg_key_type, confidence = _kg_id("doc_strong", file_type, rec_id)
         rows.append({
             "kg_id":           kg_id,
             "kg_key_type":     kg_key_type,
@@ -376,18 +382,17 @@ def load_documents(loader, records, file_type):
             "recordId":        rec_id,
             "fileType":        file_type,
             "url":             _s(out.get("url")),
-            "author":          _s(out.get("author")),
             "documentDate":    _s(out.get("documentDate")),
             "type":            _s(out.get("type")),
             "industry":        _s(out.get("industry")),
-            "country":         _s(out.get("country")),
-            "language":        out.get("language", []),
+            "language":        _s(out.get("language", "")),  
             "summary":         _s(out.get("summary")),
             "batesNumber":     bates,
             "collection":      _s(out.get("collection")),
             "source":          _s(out.get("source")),
             "tid":             _s(out.get("tid")),
-            "legalStatus":     _s(out.get("legalStatus", out.get("legalStatus", ""))),
+            "dateAdded":       _s(out.get("dateAdded", out.get("dateAddedUCSF", ""))),
+            "legalStatus":     _s(out.get("legalStatus", "")),
             "sourceFileName":  _s(sf.get("fileName")),
             "sourceFileType":  _s(sf.get("fileType")),
             "sourceFileHash":  _s(sf.get("hash")),
@@ -409,14 +414,16 @@ def load_documents(loader, records, file_type):
 UPSERT_PERSON = """
 UNWIND $rows AS r
 MERGE (p:Person {kg_id: r.kg_id})
-SET p.kg_key_type = r.kg_key_type,
-    p.uid         = r.uid,
-    p.name        = r.name,
-    p.email       = r.email,
-    p.phone       = r.phone,
-    p.role        = r.role,
-    p.address     = r.address,
-    p.organization= r.organization
+SET p.kg_key_type    = r.kg_key_type,
+    p.confidence     = r.confidence,
+    p.uid            = r.uid,
+    p.name           = r.name,
+    p.email          = r.email,
+    p.phone          = r.phone,
+    p.role           = r.role,
+    p.address        = r.address,
+    p.organization   = r.organization,
+    p.witnessContext = r.witnessContext
 """
 
 LINK_DOC_PERSON = """
@@ -434,11 +441,15 @@ MERGE (p)-[:WORKS_FOR]->(o)
 """
 
 def _person_kg_id(email, name, org=""):
-    """Strong key if email present, weak key otherwise."""
+    """Strong key if email present, weak key otherwise.
+    Returns (kg_id, confidence) where confidence is 'strong' or 'weak'."""
     email = _s(email).lower()
     if email and "@" in email:
-        return _kg_id("person_strong", email)
-    return _kg_id("person_weak", _s(name).lower(), _s(org).lower())
+        kg_id, _, confidence = _kg_id("person_strong", email)
+    else:
+        normalized_org = _normalize_org_name(org)
+        kg_id, _, confidence = _kg_id("person_weak", _s(name).lower(), normalized_org)
+    return kg_id, confidence
 
 def _collect_persons(out, doc_kg_id, source):
     """Yield (person_row, doc_kg_id) from any person-bearing structure."""
@@ -447,44 +458,60 @@ def _collect_persons(out, doc_kg_id, source):
         for c in _list(out.get("contacts", [])):
             if _s(c.get("contact_type", "individual")) != "individual":
                 continue
-            kg_id, kt = _person_kg_id(c.get("email"), c.get("name"), c.get("organization"))
-            people.append(({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, confidence = _person_kg_id(c.get("email"), c.get("name"), c.get("organization"))
+            people.append(({"kg_id": kg_id, "kg_key_type": "person", "confidence": confidence,
                              "uid": _s(c.get("_uid", kg_id)),
                              "name": _s(c.get("name")), "email": _s(c.get("email")),
                              "phone": _s(c.get("phone")), "role": _s(c.get("role")),
                              "address": _s(c.get("address")),
-                             "organization": _s(c.get("organization"))}, doc_kg_id))
+                             "organization": _s(c.get("organization")),
+                             "witnessContext": _s(c.get("witness_context", ""))}, doc_kg_id))
     elif source == "hasPart":
         for msg in _list(out.get("hasPart", [])):
             sender = msg.get("sender", {})
             if isinstance(sender, dict):
-                kg_id, kt = _person_kg_id(sender.get("email"), sender.get("name"))
-                people.append(({"kg_id": kg_id, "kg_key_type": kt,
+                kg_id, confidence = _person_kg_id(sender.get("email"), sender.get("name"))
+                people.append(({"kg_id": kg_id, "kg_key_type": "person", "confidence": confidence,
                                  "uid": _s(sender.get("_uid", kg_id)),
                                  "name": _s(sender.get("name")),
                                  "email": _s(sender.get("email")),
                                  "phone": "", "role": "", "address": "",
-                                 "organization": ""}, doc_kg_id))
+                                 "organization": "",
+                                 "witnessContext": ""}, doc_kg_id))
             for r_obj in _list(msg.get("recipient", [])):
                 if isinstance(r_obj, dict):
-                    kg_id, kt = _person_kg_id(r_obj.get("email"), r_obj.get("name"))
-                    people.append(({"kg_id": kg_id, "kg_key_type": kt,
+                    kg_id, confidence = _person_kg_id(r_obj.get("email"), r_obj.get("name"))
+                    people.append(({"kg_id": kg_id, "kg_key_type": "person", "confidence": confidence,
                                     "uid": _s(r_obj.get("_uid", kg_id)),
                                     "name": _s(r_obj.get("name")),
                                     "email": _s(r_obj.get("email")),
                                     "phone": "", "role": "", "address": "",
-                                    "organization": ""}, doc_kg_id))
+                                    "organization": "",
+                                    "witnessContext": ""}, doc_kg_id))
     elif source == "sharedEntities":
         for p in _list(out.get("sharedEntities", {}).get("people", [])):
             if not isinstance(p, dict):
                 continue
-            kg_id, kt = _person_kg_id(p.get("email"), p.get("name"), p.get("organization"))
-            people.append(({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, confidence = _person_kg_id(p.get("email"), p.get("name"), p.get("organization"))
+            people.append(({"kg_id": kg_id, "kg_key_type": "person", "confidence": confidence,
                              "uid": _s(p.get("_uid", kg_id)),
                              "name": _s(p.get("name")), "email": _s(p.get("email")),
                              "phone": _s(p.get("phone")), "role": _s(p.get("role")),
                              "address": _s(p.get("address")),
-                             "organization": _s(p.get("organization"))}, doc_kg_id))
+                             "organization": _s(p.get("organization")),
+                             "witnessContext": _s(p.get("witness_context", ""))}, doc_kg_id))
+    elif source == "author":
+        for a in _list(out.get("author", [])):
+            if not isinstance(a, dict):
+                continue
+            kg_id, confidence = _person_kg_id(a.get("email"), a.get("name"), a.get("organization"))
+            people.append(({"kg_id": kg_id, "kg_key_type": "person", "confidence": confidence,
+                             "uid": _s(a.get("_uid", kg_id)),
+                             "name": _s(a.get("name")), "email": _s(a.get("email")),
+                             "phone": _s(a.get("phone", "")), "role": "",
+                             "address": _s(a.get("address", "")),
+                             "organization": _s(a.get("organization", "")),
+                             "witnessContext": ""}, doc_kg_id))
     return people
 
 def load_persons(loader, records, file_type, doc_kg_id_map, org_kg_id_map):
@@ -493,12 +520,13 @@ def load_persons(loader, records, file_type, doc_kg_id_map, org_kg_id_map):
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
         sources = []
-        if file_type in ("DOC",):
+        # contacts[] on DOC and TXT only (legal doc types)
+        if file_type in ("DOC", "TXT"):
             sources = ["contacts"]
         elif file_type == "EMAIL":
             sources = ["hasPart"]
-        elif file_type == "XLS":
-            sources = ["sharedEntities"]
+        # author[] on all types — new object array
+        sources.append("author")
 
         for src in sources:
             for p_row, d_kg_id in _collect_persons(out, doc_kg_id, src):
@@ -522,6 +550,42 @@ def load_persons(loader, records, file_type, doc_kg_id_map, org_kg_id_map):
 
 
 # ---------------------------------------------------------------------------
+# AUTHORED_BY
+# Edge: Document -[AUTHORED_BY]-> Person
+# Source: output.author[] — present on all 5 types
+# ---------------------------------------------------------------------------
+
+LINK_AUTHORED_BY = """
+UNWIND $rows AS r
+MATCH (d:Document {kg_id: r.docKgId})
+MATCH (p:Person   {kg_id: r.personKgId})
+MERGE (d)-[:AUTHORED_BY]->(p)
+"""
+
+def load_authored_by(loader, records, file_type, doc_kg_id_map):
+    link_rows = []
+    for rec in records:
+        doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
+        if not doc_kg_id:
+            continue
+        for author in _list(rec.get("output", {}).get("author", [])):
+            if not isinstance(author, dict):
+                continue
+            email = _s(author.get("email", "")).lower()
+            email = email if "@" in email else ""
+            name  = _s(author.get("name")).lower()
+            org   = _s(author.get("organization")).lower()
+            key   = email if email else f"{name}|{org}"
+            p_kg_id = _kg_id("person_strong", email)[0] if email else \
+                      _kg_id("person_weak", name, _normalize_org_name(org))[0]
+            if p_kg_id:
+                link_rows.append({"docKgId": doc_kg_id, "personKgId": p_kg_id})
+    if link_rows:
+        loader.run_batch(LINK_AUTHORED_BY, link_rows)
+    log.info(f"  Wrote {len(link_rows)} AUTHORED_BY edges [{file_type}]")
+
+
+# ---------------------------------------------------------------------------
 # Organization
 # Strong key: lowercased name
 # ---------------------------------------------------------------------------
@@ -529,9 +593,11 @@ def load_persons(loader, records, file_type, doc_kg_id_map, org_kg_id_map):
 UPSERT_ORG = """
 UNWIND $rows AS r
 MERGE (o:Organization {kg_id: r.kg_id})
-SET o.kg_key_type = r.kg_key_type,
-    o.uid         = r.uid,
-    o.name        = r.name
+SET o.kg_key_type    = r.kg_key_type,
+    o.confidence     = r.confidence,
+    o.uid            = r.uid,
+    o.name           = r.name,
+    o.witnessContext = r.witnessContext
 """
 
 LINK_DOC_ORG = """
@@ -541,11 +607,33 @@ MATCH (o:Organization {kg_id: r.orgKgId})
 MERGE (d)-[:MENTIONS_ORG]->(o)
 """
 
-def _org_kg_id(name):
-    name = _s(name).lower().strip()
+_ORG_SUFFIXES = re.compile(
+    r"""[,\s]+(inc\.?|incorporated|corp\.?|corporation|ltd\.?|limited|
+    llc\.?|llp\.?|plc\.?|gmbh|ag|sa|bv|nv|pty\.?|co\.?|company|
+    group|holdings?|international|intl\.?|enterprises?|associates?|
+    partners?|services?|solutions?|technologies?|tech\.?|labs?|
+    laboratory|laboratories)\.?$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+def _normalize_org_name(name):
+    """Strip legal suffixes and punctuation for consistent org key generation."""
+    name = _s(name).strip()
     if not name:
-        return "", ""
-    return _kg_id("org_strong", name)
+        return ""
+    # Iteratively strip suffixes (e.g. "JUUL Labs, Inc." -> "JUUL Labs")
+    prev = None
+    while prev != name:
+        prev = name
+        name = _ORG_SUFFIXES.sub("", name).strip().rstrip(",").strip()
+    return name.lower()
+
+def _org_kg_id(name):
+    normalized = _normalize_org_name(name)
+    if not normalized:
+        return "", "strong"
+    kg_id, _, confidence = _kg_id("org_strong", normalized)
+    return kg_id, confidence
 
 def load_orgs(loader, records, file_type, doc_kg_id_map):
     org_rows, link_rows = [], []
@@ -555,34 +643,67 @@ def load_orgs(loader, records, file_type, doc_kg_id_map):
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
 
-        org_names = set()
+        # Collect org objects keyed by name — last witness_context seen wins
+        org_map = {}  # normalized_name -> {"name": ..., "witnessContext": ...}
 
         for contact in _list(out.get("contacts", [])):
             if _s(contact.get("contact_type")) == "organization":
-                org_names.add(_s(contact.get("name")))
+                n = _s(contact.get("name"))
+                if n:
+                    org_map[n.lower()] = {"name": n, "witnessContext": ""}
             if _ok(contact.get("organization")):
-                org_names.add(_s(contact.get("organization")))
+                n = _s(contact.get("organization"))
+                if n:
+                    org_map.setdefault(n.lower(), {"name": n, "witnessContext": ""})
 
         for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
             if isinstance(hc, dict):
                 for org in _list(hc.get("entities", {}).get("organizations", [])):
-                    org_names.add(_s(org.get("name") if isinstance(org, dict) else org))
+                    if isinstance(org, dict):
+                        n = _s(org.get("name", ""))
+                        if n:
+                            org_map[n.lower()] = {"name": n,
+                                "witnessContext": _s(org.get("witness_context", ""))}
+                    else:
+                        n = _s(org)
+                        if n:
+                            org_map.setdefault(n.lower(), {"name": n, "witnessContext": ""})
 
         for msg in _list(out.get("hasPart", [])):
-            for org in _list(msg.get("semanticMentions", {}).get("organizations", [])):
-                org_names.add(_s(org.get("name") if isinstance(org, dict) else org))
+            for org in _list(msg.get("entities", {}).get("organizations", [])):
+                if isinstance(org, dict):
+                    n = _s(org.get("name", ""))
+                    if n:
+                        org_map[n.lower()] = {"name": n,
+                            "witnessContext": _s(org.get("witness_context", ""))}
+                else:
+                    n = _s(org)
+                    if n:
+                        org_map.setdefault(n.lower(), {"name": n, "witnessContext": ""})
 
-        for org_obj in _list(out.get("sharedEntities", {}).get("organization", [])):
-            org_names.add(_s(org_obj.get("name") if isinstance(org_obj, dict) else org_obj))
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                for org in _list(slide.get("entities", {}).get("organizations", [])):
+                    if isinstance(org, dict):
+                        n = _s(org.get("name", ""))
+                        if n:
+                            org_map[n.lower()] = {"name": n,
+                                "witnessContext": _s(org.get("witness_context", ""))}
+                    else:
+                        n = _s(org)
+                        if n:
+                            org_map.setdefault(n.lower(), {"name": n, "witnessContext": ""})
 
-        org_names.discard("")
-        for name in org_names:
-            kg_id, kt = _org_kg_id(name)
+        for norm_name, org_obj in org_map.items():
+            name = org_obj["name"]
+            kg_id, confidence = _org_kg_id(name)
             if not kg_id:
                 continue
-            org_kg_id_map[name.lower()] = kg_id
-            org_rows.append({"kg_id": kg_id, "kg_key_type": kt,
-                              "uid": kg_id, "name": name})
+            org_kg_id_map[norm_name] = kg_id
+            org_rows.append({"kg_id": kg_id, "kg_key_type": "organization", "confidence": confidence,
+                              "uid": kg_id, "name": name,
+                              "witnessContext": org_obj["witnessContext"]})
             link_rows.append({"docKgId": doc_kg_id, "orgKgId": kg_id})
 
     if org_rows:
@@ -594,21 +715,18 @@ def load_orgs(loader, records, file_type, doc_kg_id_map):
 
 # ---------------------------------------------------------------------------
 # Drug
-# Strong key: genericName (lowercased)
+# Strong key: name (lowercased)
 # ---------------------------------------------------------------------------
 
 UPSERT_DRUG = """
 UNWIND $rows AS r
 MERGE (d:Drug {kg_id: r.kg_id})
-SET d.kg_key_type = r.kg_key_type,
-    d.uid         = r.uid,
-    d.name        = r.name,
-    d.genericName = r.genericName,
-    d.dosageForm  = r.dosageForm,
-    d.strength    = r.strength,
-    d.route       = r.route,
-    d.rxnorm      = r.rxnorm,
-    d.ndc         = r.ndc
+SET d.kg_key_type    = r.kg_key_type,
+    d.confidence     = r.confidence,
+    d.uid            = r.uid,
+    d.name           = r.name,
+    d.description    = r.description,
+    d.witnessContext  = r.witnessContext
 """
 
 LINK_DOC_DRUG = """
@@ -619,46 +737,43 @@ MERGE (doc)-[:MENTIONS_DRUG]->(dr)
 """
 
 def _drug_kg_id(drug):
-    generic = _s(drug.get("genericName")).lower()
-    name    = _s(drug.get("name")).lower()
-    key     = generic or name
-    if not key:
+    name = _s(drug.get("name")).lower()
+    if not name:
         return "", ""
-    # genericName is globally standardized -> strong key
-    kt = "drug_strong" if generic else "drug_weak"
-    return _kg_id(kt, key), kt
+    kg_id, _, confidence = _kg_id("drug_strong", name)
+    return kg_id, confidence
 
 def load_drugs(loader, records, file_type, doc_kg_id_map):
     drug_rows, link_rows = [], []
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
-        drugs = _list(out.get("drugs", []))
+        drugs = []
+        # All types: hasContent[].entities.drugs[]
         for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
             if isinstance(hc, dict):
                 drugs += _list(hc.get("entities", {}).get("drugs", []))
-                drugs += _list(hc.get("semanticMentions", {}).get("drugs", []))
+        # PPT: hasContent.slides[].entities.drugs[]
         hc_ppt = out.get("hasContent", {})
         if isinstance(hc_ppt, dict):
             for slide in _list(hc_ppt.get("slides", [])):
-                for sm in _list(slide.get("semanticMentions", [])):
-                    drugs += _list(sm.get("drugs", []))
+                drugs += _list(slide.get("entities", {}).get("drugs", []))
+        # EMAIL: hasPart[].entities.drugs[]
+        for msg in _list(out.get("hasPart", [])):
+            drugs += _list(msg.get("entities", {}).get("drugs", []))
         for drug in drugs:
             if not isinstance(drug, dict):
                 continue
-            kg_id, kt = _drug_kg_id(drug)
+            kg_id, confidence = _drug_kg_id(drug)
             if not kg_id:
                 continue
             drug_rows.append({
-                "kg_id": kg_id, "kg_key_type": kt,
-                "uid": _s(drug.get("_uid", kg_id)),
-                "name": _s(drug.get("name")),
-                "genericName": _s(drug.get("genericName")),
-                "dosageForm": _s(drug.get("dosageForm")),
-                "strength": _s(drug.get("strength")),
-                "route": _s(drug.get("route")),
-                "rxnorm": _s(drug.get("rxnorm")),
-                "ndc": _s(drug.get("ndc")),
+                "kg_id":          kg_id,
+                "kg_key_type":    "drug", "confidence": confidence,
+                "uid":            _s(drug.get("_uid", kg_id)),
+                "name":           _s(drug.get("name")),
+                "description":    _s(drug.get("description")),
+                "witnessContext": _s(drug.get("witness_context")),
             })
             link_rows.append({"docKgId": doc_kg_id, "drugKgId": kg_id})
     if drug_rows:
@@ -669,15 +784,15 @@ def load_drugs(loader, records, file_type, doc_kg_id_map):
 
 # ---------------------------------------------------------------------------
 # EmailMessage
-# Strong key: identifier + subject + dateSent
+# Strong key: subject + dateSent
 # ---------------------------------------------------------------------------
 
 UPSERT_EMAIL_MSG = """
 UNWIND $rows AS r
 MERGE (m:EmailMessage {kg_id: r.kg_id})
 SET m.kg_key_type  = r.kg_key_type,
+    m.confidence   = r.confidence,
     m.uid          = r.uid,
-    m.identifier   = r.identifier,
     m.subject      = r.subject,
     m.dateSent     = r.dateSent,
     m.body         = r.body,
@@ -704,15 +819,14 @@ def load_email_messages(loader, records, doc_kg_id_map):
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
         for msg in _list(out.get("hasPart", [])):
-            ident = _s(msg.get("identifier"))
             subj  = _s(msg.get("subject"))
             sent  = _s(msg.get("dateSent"))
-            # Strong key: identifier+subject+dateSent
-            kg_id, kt = _kg_id("msg_strong", ident, subj, sent), "msg_strong"
+            # identifier removed from EMAIL schema — key on subject+dateSent
+            kg_id, _, confidence = _kg_id("msg_strong", subj, sent)
             msg_rows.append({
-                "kg_id": kg_id, "kg_key_type": kt,
+                "kg_id": kg_id, "kg_key_type": "msg", "confidence": confidence,
                 "uid": _s(msg.get("_uid", kg_id)),
-                "identifier": ident, "subject": subj, "dateSent": sent,
+                "subject": subj, "dateSent": sent,
                 "body": _s(msg.get("body", ""))[:2000],
                 "semanticType": _s(msg.get("semantic_type")),
             })
@@ -763,6 +877,7 @@ def _generic_upsert_query(label, props):
 UNWIND $rows AS r
 MERGE (n:{label} {{kg_id: r.kg_id}})
 SET n.kg_key_type = r.kg_key_type,
+    n.confidence  = r.confidence,
 {set_lines}
 """
 
@@ -783,8 +898,8 @@ def load_claims(loader, records, doc_kg_id_map):
             if not isinstance(claim, dict):
                 continue
             text = _s(claim.get("claim_text"))
-            kg_id, kt = _kg_id("claim_weak", doc_kg_id, text[:80]), "claim_weak"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, kt, confidence = _kg_id("claim_weak", doc_kg_id, text[:80])
+            rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                          "text": text, "subject": _s(claim.get("subject")),
                          "qualifier": _s(claim.get("qualifier")),
                          "metric": _s(claim.get("metric")),
@@ -808,8 +923,8 @@ def load_legal_frameworks(loader, records, file_type, doc_kg_id_map):
             continue
         lf_type = _s(lf.get("type"))
         desc    = _s(lf.get("description"))
-        kg_id, kt = _kg_id("lf_weak", lf_type, desc[:60]), "lf_weak"
-        rows.append({"kg_id": kg_id, "kg_key_type": kt,
+        kg_id, kt, confidence = _kg_id("lf_weak", lf_type, desc[:60])
+        rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                      "type": lf_type, "description": desc})
         links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
     if rows:
@@ -828,8 +943,8 @@ def load_abbreviations(loader, records, file_type, doc_kg_id_map):
             name = _s(abbr.get("abbv_name"))
             if not name:
                 continue
-            kg_id, kt = _kg_id("abbr_weak", name.upper(), _s(abbr.get("full_form"))), "abbr_weak"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, kt, confidence = _kg_id("abbr_weak", name.upper(), _s(abbr.get("full_form")))
+            rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                          "abbvName": name, "fullForm": _s(abbr.get("full_form")),
                          "description": _s(abbr.get("description")),
                          "context": _s(abbr.get("context"))})
@@ -857,8 +972,8 @@ def load_citations(loader, records, doc_kg_id_map):
                 continue
             doi   = _s(cit.get("doi"))
             title = _s(cit.get("title"))
-            kg_id, kt = _kg_id("cit_weak", doi or title), "cit_weak"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, kt, confidence = _kg_id("cit_weak", doi or title)
+            rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                          "title": title, "doi": doi,
                          "publisher": _s(cit.get("publisher")),
                          "publicationDate": _s(cit.get("publication_date")),
@@ -883,56 +998,170 @@ def load_citations(loader, records, doc_kg_id_map):
 UPSERT_LOCATION = """
 UNWIND $rows AS r
 MERGE (l:Location {kg_id: r.kg_id})
-SET l.kg_key_type = r.kg_key_type,
-    l.name        = r.name
+SET l.kg_key_type    = r.kg_key_type,
+    l.confidence     = r.confidence,
+    l.name           = r.name,
+    l.address        = r.address,
+    l.witnessContext = r.witnessContext
 """
 def load_locations(loader, records, file_type, doc_kg_id_map):
     rows, links = [], []
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
-        loc_names = set()
-        country = _s(out.get("country"))
-        if country:
-            loc_names.add(country)
+        # All types: hasContent[].entities.locations[]
         for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
             if isinstance(hc, dict):
                 for loc in _list(hc.get("entities", {}).get("locations", [])):
-                    loc_names.add(_s(loc.get("name") if isinstance(loc, dict) else loc))
+                    name = _s(loc.get("name") if isinstance(loc, dict) else loc)
+                    if not name:
+                        continue
+                    kg_id, kt, confidence = _kg_id("loc_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "address": _s(loc.get("address", "") if isinstance(loc, dict) else ""),
+                                 "witnessContext": _s(loc.get("witness_context", "") if isinstance(loc, dict) else "")})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        # EMAIL hasPart[].entities.locations[]
         for msg in _list(out.get("hasPart", [])):
-            for loc in _list(msg.get("semanticMentions", {}).get("locations", [])):
-                loc_names.add(_s(loc.get("name") if isinstance(loc, dict) else loc))
-        for name in loc_names:
-            if not name:
-                continue
-            kg_id, kt = _kg_id("loc_strong", name.lower()), "loc_strong"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt, "name": name})
-            links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+            for loc in _list(msg.get("entities", {}).get("locations", [])):
+                name = _s(loc.get("name") if isinstance(loc, dict) else loc)
+                if not name:
+                    continue
+                kg_id, kt, confidence = _kg_id("loc_strong", name.lower())
+                rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                             "address": _s(loc.get("address", "") if isinstance(loc, dict) else ""),
+                             "witnessContext": _s(loc.get("witness_context", "") if isinstance(loc, dict) else "")})
+                links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        # PPT slides entities locations
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                for loc in _list(slide.get("entities", {}).get("locations", [])):
+                    name = _s(loc.get("name") if isinstance(loc, dict) else loc)
+                    if not name:
+                        continue
+                    kg_id, kt, confidence = _kg_id("loc_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "address": _s(loc.get("address", "") if isinstance(loc, dict) else ""),
+                                 "witnessContext": _s(loc.get("witness_context", "") if isinstance(loc, dict) else "")})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
     if rows:
         loader.run_batch(UPSERT_LOCATION, rows)
         loader.run_batch(_generic_link_query("Document","LOCATED_IN","Location"), links)
     log.info(f"  Upserted {len(set(r['kg_id'] for r in rows))} Location nodes [{file_type}]")
 
-# Topic (strong key: name)
-UPSERT_TOPIC = """
+
+# ---------------------------------------------------------------------------
+# GPE (Geo-Political Entities) — new node type
+# Strong key: name (lowercased)
+# Edge: Document -[MENTIONS_GPE]-> GPE
+# ---------------------------------------------------------------------------
+
+UPSERT_GPE = """
 UNWIND $rows AS r
-MERGE (t:Topic {kg_id: r.kg_id})
-SET t.kg_key_type = r.kg_key_type,
-    t.name        = r.name
+MERGE (g:GPE {kg_id: r.kg_id})
+SET g.kg_key_type    = r.kg_key_type,
+    g.confidence     = r.confidence,
+    g.name           = r.name,
+    g.witnessContext = r.witnessContext
 """
-def load_topics(loader, records, file_type, doc_kg_id_map):
+
+def load_gpe(loader, records, file_type, doc_kg_id_map):
     rows, links = [], []
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
         for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
             if isinstance(hc, dict):
-                for t in _list(hc.get("entities", {}).get("topics", [])):
-                    name = _s(t) if isinstance(t, str) else _s(t.get("name",""))
+                for gpe in _list(hc.get("entities", {}).get("gpe", [])):
+                    name = _s(gpe.get("name") if isinstance(gpe, dict) else gpe)
                     if not name:
                         continue
-                    kg_id, kt = _kg_id("topic_strong", name.lower()), "topic_strong"
-                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "name": name})
+                    kg_id, kt, confidence = _kg_id("gpe_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "witnessContext": _s(gpe.get("witness_context", "") if isinstance(gpe, dict) else "")})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        for msg in _list(out.get("hasPart", [])):
+            for gpe in _list(msg.get("entities", {}).get("gpe", [])):
+                name = _s(gpe.get("name") if isinstance(gpe, dict) else gpe)
+                if not name:
+                    continue
+                kg_id, kt, confidence = _kg_id("gpe_strong", name.lower())
+                rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                             "witnessContext": _s(gpe.get("witness_context", "") if isinstance(gpe, dict) else "")})
+                links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                for gpe in _list(slide.get("entities", {}).get("gpe", [])):
+                    name = _s(gpe.get("name") if isinstance(gpe, dict) else gpe)
+                    if not name:
+                        continue
+                    kg_id, kt, confidence = _kg_id("gpe_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "witnessContext": _s(gpe.get("witness_context", "") if isinstance(gpe, dict) else "")})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+    if rows:
+        loader.run_batch(UPSERT_GPE, rows)
+        loader.run_batch(_generic_link_query("Document","MENTIONS_GPE","GPE"), links)
+    log.info(f"  Upserted {len(set(r['kg_id'] for r in rows))} GPE nodes [{file_type}]")
+
+# Topic (strong key: name)
+UPSERT_TOPIC = """
+UNWIND $rows AS r
+MERGE (t:Topic {kg_id: r.kg_id})
+SET t.kg_key_type    = r.kg_key_type,
+    t.confidence     = r.confidence,
+    t.name           = r.name,
+    t.category       = r.category,
+    t.witnessContext = r.witnessContext
+"""
+def load_topics(loader, records, file_type, doc_kg_id_map):
+    rows, links = [], []
+    for rec in records:
+        doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
+        out = rec.get("output", {})
+        # All types: hasContent[].entities.topics[]
+        for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
+            if isinstance(hc, dict):
+                for t in _list(hc.get("entities", {}).get("topics", [])):
+                    # topic_string is the new field name; fallback to plain string
+                    if isinstance(t, str):
+                        name = _s(t)
+                    elif isinstance(t, dict):
+                        name = _s(t.get("topic_string", t.get("name", "")))
+                    else:
+                        continue
+                    if not name:
+                        continue
+                    kg_id, kt, confidence = _kg_id("topic_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "category": _s(t.get("category", "") if isinstance(t, dict) else ""),
+                                 "witnessContext": _s(t.get("witness_context", "") if isinstance(t, dict) else "")})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        # EMAIL hasPart[].entities.topics[]
+        for msg in _list(out.get("hasPart", [])):
+            for t in _list(msg.get("entities", {}).get("topics", [])):
+                name = _s(t.get("topic_string", "") if isinstance(t, dict) else _s(t))
+                if not name:
+                    continue
+                kg_id, kt, confidence = _kg_id("topic_strong", name.lower())
+                rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                             "category": _s(t.get("category", "") if isinstance(t, dict) else ""),
+                             "witnessContext": _s(t.get("witness_context", "") if isinstance(t, dict) else "")})
+                links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
+        # PPT slides entities topics
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                for t in _list(slide.get("entities", {}).get("topics", [])):
+                    name = _s(t.get("topic_string", "") if isinstance(t, dict) else _s(t))
+                    if not name:
+                        continue
+                    kg_id, kt, confidence = _kg_id("topic_strong", name.lower())
+                    rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence, "name": name,
+                                 "category": _s(t.get("category", "") if isinstance(t, dict) else ""),
+                                 "witnessContext": _s(t.get("witness_context", "") if isinstance(t, dict) else "")})
                     links.append({"fromKgId": doc_kg_id, "toKgId": kg_id})
     if rows:
         loader.run_batch(UPSERT_TOPIC, rows)
@@ -951,8 +1180,8 @@ def load_slides(loader, records, doc_kg_id_map):
             if not isinstance(slide, dict):
                 continue
             pn = slide.get("pageNumber", 0)
-            kg_id, kt = _kg_id("slide_weak", doc_kg_id, str(pn)), "slide_weak"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, kt, confidence = _kg_id("slide_weak", doc_kg_id, str(pn))
+            rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                          "pageNumber": pn, "title": _s(slide.get("title")),
                          "keyClaim": _s(slide.get("keyClaim")),
                          "speakerNotes": _s(slide.get("speakerNotes"))})
@@ -978,8 +1207,8 @@ def load_sheets(loader, records, doc_kg_id_map):
             if not isinstance(hc, dict):
                 continue
             pn = hc.get("pageNumber", i)
-            kg_id, kt = _kg_id("sheet_weak", doc_kg_id, str(pn)), "sheet_weak"
-            rows.append({"kg_id": kg_id, "kg_key_type": kt,
+            kg_id, kt, confidence = _kg_id("sheet_weak", doc_kg_id, str(pn))
+            rows.append({"kg_id": kg_id, "kg_key_type": kt, "confidence": confidence,
                          "pageNumber": pn, "title": _s(hc.get("title")),
                          "mainEntity": _s(hc.get("mainEntity")),
                          "summary": _s(hc.get("summary")),
@@ -1007,12 +1236,12 @@ def load_text_content(loader, records, doc_kg_id_map):
                 continue
             tc_uid = _s(hc.get("_uid", ""))
             tc_kg_id = _kg_id("tc_weak", doc_kg_id, _s(hc.get("textDocumentId", str(i))))[0]
-            struct   = hc.get("structure", {}) or {}
-            tabular  = struct.get("tabular", {}) or {}
+            # tabular path updated: structure.tabular -> tabular (moved up in new schema)
+            tabular  = hc.get("tabular", {}) or {}
             dims     = tabular.get("dimensions", {}) or {}
             dialect  = tabular.get("dialect", {}) or {}
             tc_rows.append({
-                "kg_id": tc_kg_id, "kg_key_type": "tc_weak",
+                "kg_id": tc_kg_id, "kg_key_type": "tc", "confidence": "weak",
                 "uid": tc_uid, "textDocumentId": _s(hc.get("textDocumentId")),
                 "title": _s(hc.get("title")), "summary": _s(hc.get("summary")),
                 "creationDate": _s(hc.get("creationDate")),
@@ -1035,7 +1264,7 @@ def load_text_content(loader, records, doc_kg_id_map):
                 col_kg_id = _kg_id("col_weak", tc_kg_id,
                                    _s(col.get("name")), str(col.get("index","")))[0]
                 col_rows.append({
-                    "kg_id": col_kg_id, "kg_key_type": "col_weak",
+                    "kg_id": col_kg_id, "kg_key_type": "col", "confidence": "weak",
                     "name": _s(col.get("name")), "index": col.get("index", 0),
                     "inferredType": _s(col.get("inferredType")),
                     "nullable": col.get("nullable", True),
@@ -1069,18 +1298,27 @@ def load_text_content(loader, records, doc_kg_id_map):
 # ---------------------------------------------------------------------------
 
 def _collect_semantic(out, field):
-    """Collect all instances of a semanticMentions field across all paths."""
+    """Collect all instances of a semantic entity field across all schema types.
+
+    All types store semantic entities under entities block (semanticMentions merged).
+
+    Paths:
+      DOC/XLS/TXT : hasContent[].entities.<field>
+      EMAIL       : hasPart[].entities.<field>
+      PPT         : hasContent.slides[].entities.<field>
+    """
     items = []
     for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
         if isinstance(hc, dict):
-            items += _list(hc.get("semanticMentions", {}).get(field, []))
+            items += _list(hc.get("entities", {}).get(field, []))
+    # EMAIL hasPart entities path
     for msg in _list(out.get("hasPart", [])):
-        items += _list(msg.get("semanticMentions", {}).get(field, []))
+        items += _list(msg.get("entities", {}).get(field, []))
+    # PPT slides entities path
     hc_dict = out.get("hasContent", {})
     if isinstance(hc_dict, dict):
         for slide in _list(hc_dict.get("slides", [])):
-            for sm in _list(slide.get("semanticMentions", [])):
-                items += _list(sm.get(field, []))
+            items += _list(slide.get("entities", {}).get(field, []))
     return items
 
 def load_semantic_nodes(loader, records, file_type, doc_kg_id_map,
@@ -1103,45 +1341,50 @@ def load_semantic_nodes(loader, records, file_type, doc_kg_id_map,
 def _event_props(item, doc_kg_id):
     if not isinstance(item, dict):
         return None
-    name = _s(item.get("name", item.get("context", "")))
-    if not name:
+    text = _s(item.get("event_string", item.get("name", item.get("context", ""))))
+    if not text:
         return None
-    kg_id = _kg_id("event_weak", doc_kg_id, name, _s(item.get("date","")))[0]
-    return {"kg_id": kg_id, "kg_key_type": "event_weak",
-            "name": name, "date": _s(item.get("date")),
-            "startDate": _s(item.get("startDate")),
-            "location": _s(item.get("location")),
-            "context": _s(item.get("context")),
-            "platform": _s(item.get("platform"))}
+    kg_id = _kg_id("event_weak", doc_kg_id, text[:80])[0]
+    return {"kg_id": kg_id, "kg_key_type": "event", "confidence": "weak",
+            "text": text, "witnessContext": _s(item.get("witness_context", ""))}
 
 def _finance_props(item, doc_kg_id):
     if not isinstance(item, dict):
         return None
-    amount = _s(item.get("amount",""))
-    if not amount:
+    text = _s(item.get("finance_string", item.get("amount", "")))
+    if not text:
         return None
-    kg_id = _kg_id("fin_weak", doc_kg_id, amount, _s(item.get("item","")))[0]
-    return {"kg_id": kg_id, "kg_key_type": "fin_weak",
-            "amount": amount, "currency": _s(item.get("currency")),
-            "item": _s(item.get("item")), "context": _s(item.get("context"))}
+    kg_id = _kg_id("fin_weak", doc_kg_id, text[:80])[0]
+    return {"kg_id": kg_id, "kg_key_type": "fin", "confidence": "weak",
+            "text": text, "witnessContext": _s(item.get("witness_context", ""))}
 
 def _metric_props(item, doc_kg_id):
     if not isinstance(item, dict):
         return None
-    name = _s(item.get("name",""))
-    if not name:
+    text = _s(item.get("metric_string", item.get("name", "")))
+    if not text:
         return None
-    kg_id = _kg_id("metric_weak", doc_kg_id, name)[0]
-    return {"kg_id": kg_id, "kg_key_type": "metric_weak",
-            "name": name, "value": _s(item.get("value"))}
+    kg_id = _kg_id("metric_weak", doc_kg_id, text[:80])[0]
+    return {"kg_id": kg_id, "kg_key_type": "metric", "confidence": "weak",
+            "text": text, "witnessContext": _s(item.get("witness_context", ""))}
 
-def _str_item_props(label_ns):
+def _str_item_props(label_ns, text_field):
+    """Generic props builder for Risk, Requirement, Decision, HealthMention."""
     def fn(item, doc_kg_id):
-        text = _s(item) if isinstance(item, str) else _s(item.get("description","") if isinstance(item,dict) else "")
+        if isinstance(item, str):
+            text = _s(item)
+        elif isinstance(item, dict):
+            # Try new *_string field first, fall back to description
+            text = _s(item.get(text_field, item.get("description", "")))
+        else:
+            return None
         if not text:
             return None
-        kg_id = _kg_id(label_ns, doc_kg_id, text[:80])[0]
-        return {"kg_id": kg_id, "kg_key_type": label_ns, "description": text}
+        kg_id, entity_type, confidence = _kg_id(label_ns, doc_kg_id, text[:80])
+        return {"kg_id": kg_id, "kg_key_type": entity_type, "confidence": confidence,
+                "text": text,
+                "witnessContext": _s(item.get("witness_context", "") if isinstance(item, dict) else ""),
+                "category": _s(item.get("category", "") if isinstance(item, dict) else "")}
     return fn
 
 def _date_mention_props(item, doc_kg_id):
@@ -1151,7 +1394,7 @@ def _date_mention_props(item, doc_kg_id):
     if not date:
         return None
     kg_id = _kg_id("date_weak", doc_kg_id, date, _s(item.get("contextOfDate",""))[:40])[0]
-    return {"kg_id": kg_id, "kg_key_type": "date_weak",
+    return {"kg_id": kg_id, "kg_key_type": "date", "confidence": "weak",
             "date": date, "contextOfDate": _s(item.get("contextOfDate"))}
 
 def _product_props(item, doc_kg_id):
@@ -1161,9 +1404,10 @@ def _product_props(item, doc_kg_id):
     if not name:
         return None
     kg_id = _kg_id("product_weak", name.lower())[0]
-    return {"kg_id": kg_id, "kg_key_type": "product_weak",
+    return {"kg_id": kg_id, "kg_key_type": "product", "confidence": "weak",
             "name": name, "model": _s(item.get("model")),
-            "identifier": _s(item.get("identifier"))}
+            "identifier": _s(item.get("identifier")),
+            "witnessContext": _s(item.get("witness_context", ""))}
 
 
 # ---------------------------------------------------------------------------
@@ -1175,10 +1419,9 @@ def load_signature_blocks(loader, records, file_type, doc_kg_id_map):
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
+        # All types use output.signatureBlocks[] top-level (plural)
+        # Removed: output.hasContent[].signatureBlock (old TXT path)
         sigs = _list(out.get("signatureBlocks", []))
-        for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
-            if isinstance(hc, dict) and hc.get("signatureBlock"):
-                sigs.append(hc["signatureBlock"])
         for sig in sigs:
             if not isinstance(sig, dict):
                 continue
@@ -1186,7 +1429,7 @@ def load_signature_blocks(loader, records, file_type, doc_kg_id_map):
             if not signer:
                 continue
             kg_id = _kg_id("sig_weak", doc_kg_id, signer, _s(sig.get("date","")))[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "sig_weak",
+            rows.append({"kg_id": kg_id, "kg_key_type": "sig", "confidence": "weak",
                          "signerName": signer, "signerTitle": _s(sig.get("signerTitle")),
                          "organization": _s(sig.get("organization")),
                          "date": _s(sig.get("date")), "location": _s(sig.get("location")),
@@ -1223,6 +1466,7 @@ UPSERT_VOCAB = """
 UNWIND $rows AS r
 MERGE (v:Vocab {kg_id: r.kg_id})
 SET v.kg_key_type = r.kg_key_type,
+    v.confidence  = r.confidence,
     v.name        = r.name,
     v.type        = r.type,
     v.contextUrl  = r.contextUrl
@@ -1261,7 +1505,7 @@ def load_vocab(loader, records, file_type, doc_kg_id_map):
             ctx_url = _s(entry.get("contextUrl",
                          entry.get("@vocab",
                          entry.get("content", ""))))
-            kg_id, kg_key_type = _kg_id("vocab_weak", doc_kg_id, name, str(i))
+            kg_id, kg_key_type, confidence = _kg_id("vocab_weak", doc_kg_id, name, str(i))
             rows.append({
                 "kg_id":      kg_id,
                 "kg_key_type": kg_key_type,
@@ -1274,6 +1518,33 @@ def load_vocab(loader, records, file_type, doc_kg_id_map):
         loader.run_batch(UPSERT_VOCAB, rows)
         loader.run_batch(LINK_DOC_VOCAB, links)
     log.info(f"  Upserted {len(rows)} Vocab nodes [{file_type}]")
+
+
+# ---------------------------------------------------------------------------
+# EMAIL DateMention nodes linked to EmailMessage
+# Edge: EmailMessage -[MENTIONS_DATE]-> DateMention
+# ---------------------------------------------------------------------------
+def load_email_date_mentions(loader, records, doc_kg_id_map):
+    rows, links = [], []
+    for rec in records:
+        out = rec.get("output", {})
+        for msg in _list(out.get("hasPart", [])):
+            subj      = _s(msg.get("subject"))
+            date_sent = _s(msg.get("dateSent"))
+            # identifier removed — key matches updated EmailMessage key
+            msg_kg_id = _kg_id("msg_strong", subj, date_sent)[0]
+            # path updated: semanticMentions -> entities
+            for dm in _list(msg.get("entities", {}).get("datesMentioned", [])):
+                row = _date_mention_props(dm, msg_kg_id)
+                if not row:
+                    continue
+                rows.append(row)
+                links.append({"fromKgId": msg_kg_id, "toKgId": row["kg_id"]})
+    if rows:
+        prop_keys = [k for k in rows[0] if k not in ("kg_id", "kg_key_type")]
+        loader.run_batch(_generic_upsert_query("DateMention", prop_keys), rows)
+        loader.run_batch(_generic_link_query("EmailMessage", "MENTIONS_DATE", "DateMention"), links)
+    log.info(f"  Upserted {len(rows)} DateMention nodes linked to EmailMessage [EMAIL]")
 
 
 def run_pipeline(loader, records_map):
@@ -1291,14 +1562,17 @@ def run_pipeline(loader, records_map):
     for ft, recs in records_map.items():
         org_kg_id_maps[ft] = load_orgs(loader, recs, ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 3: Persons ===")
+    log.info("=== Stage 3: Persons (contacts[] DOC/TXT + author[] all types) ===")
     for ft, recs in records_map.items():
         load_persons(loader, recs, ft, doc_kg_id_maps[ft], org_kg_id_maps[ft])
 
-    log.info("=== Stage 4: Drugs ===")
-    for ft in ("DOC", "EMAIL", "PPT", "XLS"):
-        if ft in records_map:
-            load_drugs(loader, records_map[ft], ft, doc_kg_id_maps[ft])
+    log.info("=== Stage 3b: AUTHORED_BY edges ===")
+    for ft, recs in records_map.items():
+        load_authored_by(loader, recs, ft, doc_kg_id_maps[ft])
+
+    log.info("=== Stage 4: Drugs (simplified schema, entities block, all 5 types) ===")
+    for ft, recs in records_map.items():
+        load_drugs(loader, recs, ft, doc_kg_id_maps[ft])
 
     log.info("=== Stage 5: Email Messages ===")
     if "EMAIL" in records_map:
@@ -1308,10 +1582,13 @@ def run_pipeline(loader, records_map):
     for ft, recs in records_map.items():
         load_locations(loader, recs, ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 7: Topics ===")
-    for ft in ("DOC", "PPT"):
-        if ft in records_map:
-            load_topics(loader, records_map[ft], ft, doc_kg_id_maps[ft])
+    log.info("=== Stage 6b: GPE (new node type) ===")
+    for ft, recs in records_map.items():
+        load_gpe(loader, recs, ft, doc_kg_id_maps[ft])
+
+    log.info("=== Stage 7: Topics (all 5 types, topic_string field) ===")
+    for ft, recs in records_map.items():
+        load_topics(loader, recs, ft, doc_kg_id_maps[ft])
 
     log.info("=== Stage 8: Claims ===")
     if "DOC" in records_map:
@@ -1341,69 +1618,69 @@ def run_pipeline(loader, records_map):
     if "TXT" in records_map:
         load_text_content(loader, records_map["TXT"], doc_kg_id_maps["TXT"])
 
-    log.info("=== Stage 15: Semantic Mention Nodes ===")
+    log.info("=== Stage 15: Semantic Mention Nodes (entities block, all types) ===")
     for ft, recs in records_map.items():
         dmap = doc_kg_id_maps[ft]
-        load_semantic_nodes(loader, recs, ft, dmap, "events",        "Event",       "HAS_EVENT",       _event_props)
-        load_semantic_nodes(loader, recs, ft, dmap, "finances",      "Finance",     "HAS_FINANCE",     _finance_props)
-        load_semantic_nodes(loader, recs, ft, dmap, "metrics",       "Metric",      "HAS_METRIC",      _metric_props)
-        load_semantic_nodes(loader, recs, ft, dmap, "risks",         "Risk",        "HAS_RISK",        _str_item_props("risk_weak"))
-        load_semantic_nodes(loader, recs, ft, dmap, "requirements",  "Requirement", "HAS_REQUIREMENT", _str_item_props("req_weak"))
-        load_semantic_nodes(loader, recs, ft, dmap, "decisionsMade", "Decision",    "HAS_DECISION",    _str_item_props("dec_weak"))
-        load_semantic_nodes(loader, recs, ft, dmap, "datesMentioned","DateMention", "MENTIONS_DATE",   _date_mention_props)
-        load_semantic_nodes(loader, recs, ft, dmap, "health",        "HealthMention","MENTIONS_HEALTH",_str_item_props("health_weak"))
-        load_semantic_nodes(loader, recs, ft, dmap, "products",      "Product",     "MENTIONS_PRODUCT",_product_props)
+        load_semantic_nodes(loader, recs, ft, dmap, "events",        "Event",        "HAS_EVENT",        _event_props)
+        load_semantic_nodes(loader, recs, ft, dmap, "finances",      "Finance",      "HAS_FINANCE",      _finance_props)
+        load_semantic_nodes(loader, recs, ft, dmap, "metrics",       "Metric",       "HAS_METRIC",       _metric_props)
+        load_semantic_nodes(loader, recs, ft, dmap, "risks",         "Risk",         "HAS_RISK",         _str_item_props("risk_weak",   "risk_string"))
+        load_semantic_nodes(loader, recs, ft, dmap, "requirements",  "Requirement",  "HAS_REQUIREMENT",  _str_item_props("req_weak",    "requirement_string"))
+        load_semantic_nodes(loader, recs, ft, dmap, "decisionsMade", "Decision",     "HAS_DECISION",     _str_item_props("dec_weak",    "decision_string"))
+        load_semantic_nodes(loader, recs, ft, dmap, "health",        "HealthMention","MENTIONS_HEALTH",  _str_item_props("health_weak", "health_string"))
+        load_semantic_nodes(loader, recs, ft, dmap, "products",      "Product",      "MENTIONS_PRODUCT", _product_props)
+        if ft != "EMAIL":
+            load_semantic_nodes(loader, recs, ft, dmap, "datesMentioned", "DateMention", "MENTIONS_DATE", _date_mention_props)
 
-    log.info("=== Stage 16: Signature Blocks ===")
-    for ft in ("DOC", "TXT"):
+    if "EMAIL" in records_map:
+        load_email_date_mentions(loader, records_map["EMAIL"], doc_kg_id_maps["EMAIL"])
+
+    log.info("=== Stage 16: Signature Blocks (DOC, PPT, XLS, TXT) ===")
+    for ft in ("DOC", "PPT", "XLS", "TXT"):
         if ft in records_map:
             load_signature_blocks(loader, records_map[ft], ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 17: PPT VisualContent ===")
-    if "PPT" in records_map:
-        load_visual_content(loader, records_map["PPT"], doc_kg_id_maps["PPT"])
+    log.info("=== Stage 17: Figures (DOC, PPT, XLS — unified visuals) ===")
+    for ft in ("DOC", "PPT", "XLS"):
+        if ft in records_map:
+            load_figures(loader, records_map[ft], ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 18: DOC Figures ===")
-    if "DOC" in records_map:
-        load_figures(loader, records_map["DOC"], doc_kg_id_maps["DOC"])
-
-    log.info("=== Stage 19: Links (DOC + PPT) ===")
-    for ft in ("DOC", "PPT"):
+    log.info("=== Stage 18: Links (DOC, PPT, TXT) ===")
+    for ft in ("DOC", "PPT", "TXT"):
         if ft in records_map:
             load_links(loader, records_map[ft], ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 20: DOC CaseContext + SectionDetails ===")
+    log.info("=== Stage 19: DOC/TXT CaseContext + SectionDetails ===")
     if "DOC" in records_map:
         load_case_context(loader, records_map["DOC"], doc_kg_id_maps["DOC"])
-        load_section_details(loader, records_map["DOC"], doc_kg_id_maps["DOC"])
+    for ft in ("DOC", "TXT"):
+        if ft in records_map:
+            load_section_details(loader, records_map[ft], ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 21: XLS TableRegions + Formulas + PivotTables + Assessments ===")
+    log.info("=== Stage 20: XLS TableRegions + Formulas + PivotTables + Assessments ===")
     if "XLS" in records_map:
         load_table_regions(loader, records_map["XLS"], doc_kg_id_maps["XLS"])
         load_pivot_tables(loader, records_map["XLS"], doc_kg_id_maps["XLS"])
         load_assessments(loader, records_map["XLS"], doc_kg_id_maps["XLS"])
 
-    log.info("=== Stage 22: TXT Pages + CellIndex ===")
+    log.info("=== Stage 21: TXT CellIndex ===")
     if "TXT" in records_map:
-        load_pages(loader, records_map["TXT"], doc_kg_id_maps["TXT"])
         load_cell_index(loader, records_map["TXT"], doc_kg_id_maps["TXT"])
 
-    log.info("=== Stage 23: Identifiers (TXT + XLS) ===")
-    for ft in ("TXT", "XLS"):
-        if ft in records_map:
-            load_identifiers(loader, records_map[ft], ft, doc_kg_id_maps[ft])
+    log.info("=== Stage 22: Identifiers (all 5 types) ===")
+    for ft, recs in records_map.items():
+        load_identifiers(loader, recs, ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 24: EmbeddedObjects (DOC + PPT + XLS) ===")
+    log.info("=== Stage 23: EmbeddedObjects (DOC, PPT, XLS) ===")
     for ft in ("DOC", "PPT", "XLS"):
         if ft in records_map:
             load_embedded_objects(loader, records_map[ft], ft, doc_kg_id_maps[ft])
 
-    log.info("=== Stage 25: Procedures (TXT + PPT) ===")
-    for ft in ("TXT", "PPT"):
-        if ft in records_map:
-            load_procedures(loader, records_map[ft], ft, doc_kg_id_maps[ft])
+    log.info("=== Stage 24: Procedures (TXT only) ===")
+    if "TXT" in records_map:
+        load_procedures(loader, records_map["TXT"], "TXT", doc_kg_id_maps["TXT"])
 
-    log.info("=== Stage 26: Cross-doc mention edges ===")
+    log.info("=== Stage 25: Cross-doc mention edges ===")
     for ft, recs in records_map.items():
         load_mention_edges(loader, recs, ft, doc_kg_id_maps[ft])
 
@@ -1413,48 +1690,16 @@ def run_pipeline(loader, records_map):
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# PPT: VisualContent (slides[].visualContent[])
-# Edge: Slide -[HAS_VISUAL]-> VisualContent
-# ---------------------------------------------------------------------------
-def load_visual_content(loader, records, doc_kg_id_map):
-    rows, links = [], []
-    for rec in records:
-        doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
-        slides = rec.get("output", {}).get("hasContent", {})
-        if isinstance(slides, dict):
-            slides = slides.get("slides", [])
-        for slide in _list(slides):
-            if not isinstance(slide, dict):
-                continue
-            pn = slide.get("pageNumber", 0)
-            slide_kg_id = _kg_id("slide_weak", doc_kg_id, str(pn))[0]
-            for i, vc in enumerate(_list(slide.get("visualContent", []))):
-                if not isinstance(vc, dict):
-                    continue
-                kg_id = _kg_id("vc_weak", slide_kg_id, _s(vc.get("type","")), str(i))[0]
-                rows.append({"kg_id": kg_id, "kg_key_type": "vc_weak",
-                             "visualType": _s(vc.get("type")),
-                             "description": _s(vc.get("description")),
-                             "altText": _s(vc.get("altText")),
-                             "embeddedText": _s(vc.get("embeddedText")),
-                             "source": _s(vc.get("source"))})
-                links.append({"fromKgId": slide_kg_id, "toKgId": kg_id})
-    if rows:
-        loader.run_batch(_generic_upsert_query("VisualContent",
-            ["visualType","description","altText","embeddedText","source"]), rows)
-        loader.run_batch(_generic_link_query("Slide","HAS_VISUAL","VisualContent"), links)
-    log.info(f"  Upserted {len(rows)} VisualContent nodes")
-
-
-# ---------------------------------------------------------------------------
 # DOC: Figures (hasContent[].visuals.figures[])
 # Edge: Document -[HAS_FIGURE {pageNumber}]-> Figure
 # ---------------------------------------------------------------------------
-def load_figures(loader, records, doc_kg_id_map):
+def load_figures(loader, records, file_type, doc_kg_id_map):
     rows, links = [], []
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
-        for hc in _list(rec.get("output", {}).get("hasContent", [])):
+        out = rec.get("output", {})
+        # DOC/XLS: hasContent[].visuals.figures[]
+        for hc in _list(out.get("hasContent") if isinstance(out.get("hasContent"), list) else []):
             if not isinstance(hc, dict):
                 continue
             pn = hc.get("pageNumber", 0)
@@ -1463,17 +1708,42 @@ def load_figures(loader, records, doc_kg_id_map):
                     continue
                 fig_id = _s(fig.get("id", ""))
                 kg_id = _kg_id("fig_weak", doc_kg_id, fig_id or _s(fig.get("title","")))[0]
-                rows.append({"kg_id": kg_id, "kg_key_type": "fig_weak",
+                rows.append({"kg_id": kg_id, "kg_key_type": "fig", "confidence": "weak",
                              "figureId": fig_id,
-                             "title": _s(fig.get("title")),
-                             "label": _s(fig.get("label")),
-                             "caption": _s(fig.get("caption")),
-                             "context": _s(fig.get("context")),
-                             "source": _s(fig.get("source"))})
+                             "title":    _s(fig.get("title")),
+                             "caption":  _s(fig.get("caption")),
+                             "context":  _s(fig.get("context")),
+                             "notes":    _s(fig.get("notes"))})
                 links.append({"fromKgId": doc_kg_id, "toKgId": kg_id, "pageNumber": pn})
+            # XLS sheetObjects.visuals.figures[]
+            for fig in _list(hc.get("sheetObjects", {}).get("visuals", {}).get("figures", [])):
+                if not isinstance(fig, dict):
+                    continue
+                fig_id = _s(fig.get("id", ""))
+                kg_id = _kg_id("fig_weak", doc_kg_id, fig_id or _s(fig.get("title","")))[0]
+                rows.append({"kg_id": kg_id, "kg_key_type": "fig", "confidence": "weak",
+                             "figureId": fig_id, "title": _s(fig.get("title")),
+                             "caption": _s(fig.get("caption")), "context": _s(fig.get("context")),
+                             "notes": _s(fig.get("notes"))})
+                links.append({"fromKgId": doc_kg_id, "toKgId": kg_id, "pageNumber": pn})
+        # PPT: hasContent.slides[].visuals.figures[]
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                pn = slide.get("pageNumber", 0)
+                for fig in _list(slide.get("visuals", {}).get("figures", [])):
+                    if not isinstance(fig, dict):
+                        continue
+                    fig_id = _s(fig.get("id", ""))
+                    kg_id = _kg_id("fig_weak", doc_kg_id, fig_id or _s(fig.get("title","")), str(pn))[0]
+                    rows.append({"kg_id": kg_id, "kg_key_type": "fig", "confidence": "weak",
+                                 "figureId": fig_id, "title": _s(fig.get("title")),
+                                 "caption": _s(fig.get("caption")), "context": _s(fig.get("context")),
+                                 "notes": _s(fig.get("notes"))})
+                    links.append({"fromKgId": doc_kg_id, "toKgId": kg_id, "pageNumber": pn})
     if rows:
         loader.run_batch(_generic_upsert_query("Figure",
-            ["figureId","title","label","caption","context","source"]), rows)
+            ["figureId","title","caption","context","notes"]), rows)
         loader.run_batch("""
             UNWIND $rows AS r
             MATCH (d:Document {kg_id: r.fromKgId})
@@ -1481,7 +1751,7 @@ def load_figures(loader, records, doc_kg_id_map):
             MERGE (d)-[rel:HAS_FIGURE]->(f)
             SET rel.pageNumber = r.pageNumber
         """, links)
-    log.info(f"  Upserted {len(rows)} Figure nodes")
+    log.info(f"  Upserted {len(rows)} Figure nodes [{file_type}]")
 
 
 # ---------------------------------------------------------------------------
@@ -1501,7 +1771,7 @@ def load_links(loader, records, file_type, doc_kg_id_map):
             if not url:
                 continue
             kg_id = _kg_id("link_weak", doc_kg_id, url)[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "link_weak",
+            rows.append({"kg_id": kg_id, "kg_key_type": "link", "confidence": "weak",
                          "url": url,
                          "displayText": _s(lnk.get("displayText")),
                          "linkType": _s(lnk.get("type"))})
@@ -1521,7 +1791,7 @@ def load_links(loader, records, file_type, doc_kg_id_map):
                     if not url:
                         continue
                     kg_id = _kg_id("link_weak", doc_kg_id, url, str(pn))[0]
-                    rows.append({"kg_id": kg_id, "kg_key_type": "link_weak",
+                    rows.append({"kg_id": kg_id, "kg_key_type": "link", "confidence": "weak",
                                  "url": url,
                                  "displayText": _s(lnk.get("displayText")),
                                  "linkType": _s(lnk.get("type"))})
@@ -1556,7 +1826,7 @@ def load_case_context(loader, records, doc_kg_id_map):
         if not case_num and not filing:
             continue
         kg_id = _kg_id("cc_weak", doc_kg_id, case_num, filing)[0]
-        rows.append({"kg_id": kg_id, "kg_key_type": "cc_weak",
+        rows.append({"kg_id": kg_id, "kg_key_type": "cc", "confidence": "weak",
                      "caseNumber": case_num,
                      "filingDate": filing,
                      "jurisdiction": _s(cc.get("jurisdiction")),
@@ -1578,7 +1848,7 @@ def load_case_context(loader, records, doc_kg_id_map):
 # DOC: SectionDetails (sections.sectionDetails[])
 # Edge: Document -[HAS_SECTION {sectionType}]-> SectionDetail
 # ---------------------------------------------------------------------------
-def load_section_details(loader, records, doc_kg_id_map):
+def load_section_details(loader, records, file_type, doc_kg_id_map):
     rows, links = [], []
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
@@ -1589,7 +1859,7 @@ def load_section_details(loader, records, doc_kg_id_map):
             title = _s(sd.get("title",""))
             stype = _s(sd.get("section_type",""))
             kg_id = _kg_id("sd_weak", doc_kg_id, title, str(i))[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "sd_weak",
+            rows.append({"kg_id": kg_id, "kg_key_type": "sd", "confidence": "weak",
                          "title": title, "sectionType": stype})
             links.append({"fromKgId": doc_kg_id, "toKgId": kg_id,
                           "sectionType": stype})
@@ -1627,7 +1897,7 @@ def load_table_regions(loader, records, doc_kg_id_map):
                 tr_kg_id  = _kg_id("tr_weak", sheet_kg_id, region_id or range_a1)[0]
                 layout = tr.get("layout", {}) or {}
                 units  = tr.get("units",  {}) or {}
-                tr_rows.append({"kg_id": tr_kg_id, "kg_key_type": "tr_weak",
+                tr_rows.append({"kg_id": tr_kg_id, "kg_key_type": "tr", "confidence": "weak",
                                 "regionId": region_id, "rangeA1": range_a1,
                                 "tableType": _s(tr.get("tableType")),
                                 "hasMergedCell": layout.get("hasMergedCell", False),
@@ -1644,7 +1914,7 @@ def load_table_regions(loader, records, doc_kg_id_map):
                         continue
                     cell = _s(formula.get("cell",""))
                     f_kg_id = _kg_id("formula_weak", tr_kg_id, cell)[0]
-                    f_rows.append({"kg_id": f_kg_id, "kg_key_type": "formula_weak",
+                    f_rows.append({"kg_id": f_kg_id, "kg_key_type": "formula", "confidence": "weak",
                                    "cell": cell,
                                    "formula": _s(formula.get("formula")),
                                    "calculatedValue": _s(formula.get("calculatedValue")),
@@ -1692,7 +1962,7 @@ def load_pivot_tables(loader, records, doc_kg_id_map):
                     continue
                 name = _s(pt.get("name",""))
                 kg_id = _kg_id("pt_weak", sheet_kg_id, name)[0]
-                rows.append({"kg_id": kg_id, "kg_key_type": "pt_weak",
+                rows.append({"kg_id": kg_id, "kg_key_type": "pt", "confidence": "weak",
                              "name": name,
                              "rangeA1": _s(pt.get("rangeA1")),
                              "sourceRangeA1": _s(pt.get("sourceRangeA1")),
@@ -1725,7 +1995,7 @@ def load_assessments(loader, records, doc_kg_id_map):
             if not atype and not rtype:
                 continue
             kg_id = _kg_id("asmnt_weak", sheet_kg_id, atype, rtype)[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "asmnt_weak",
+            rows.append({"kg_id": kg_id, "kg_key_type": "asmnt", "confidence": "weak",
                          "assessmentType": atype,
                          "riskType": rtype,
                          "riskDescription": _s(asmnt.get("riskDescription")),
@@ -1739,51 +2009,7 @@ def load_assessments(loader, records, doc_kg_id_map):
 
 
 # ---------------------------------------------------------------------------
-# TXT: Pages (hasContent[].structure.pages[])
-# Edge: TextContent -[HAS_PAGE {pageNumber}]-> Page
-# ---------------------------------------------------------------------------
-def load_pages(loader, records, doc_kg_id_map):
-    rows, links = [], []
-    for rec in records:
-        doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
-        for i, hc in enumerate(_list(rec.get("output", {}).get("hasContent", []))):
-            if not isinstance(hc, dict):
-                continue
-            tc_kg_id = _kg_id("tc_weak", doc_kg_id,
-                              _s(hc.get("textDocumentId", str(i))))[0]
-            for page in _list(hc.get("structure", {}).get("pages", [])):
-                if not isinstance(page, dict):
-                    continue
-                pn = page.get("pageNumber", 0)
-                kg_id = _kg_id("page_weak", tc_kg_id, str(pn))[0]
-                hdr = page.get("header", {}) or {}
-                ftr = page.get("footer", {}) or {}
-                rows.append({"kg_id": kg_id, "kg_key_type": "page_weak",
-                             "pageNumber": pn,
-                             "bodyText": _s(page.get("bodyText",""))[:4000],
-                             "headerLeft": _s(hdr.get("left")),
-                             "headerCenter": _s(hdr.get("center")),
-                             "headerRight": _s(hdr.get("right")),
-                             "footerLeft": _s(ftr.get("left")),
-                             "footerCenter": _s(ftr.get("center")),
-                             "footerRight": _s(ftr.get("right"))})
-                links.append({"fromKgId": tc_kg_id, "toKgId": kg_id, "pageNumber": pn})
-    if rows:
-        loader.run_batch(_generic_upsert_query("Page", [
-            "pageNumber","bodyText","headerLeft","headerCenter","headerRight",
-            "footerLeft","footerCenter","footerRight"]), rows)
-        loader.run_batch("""
-            UNWIND $rows AS r
-            MATCH (tc:TextContent {kg_id: r.fromKgId})
-            MATCH (p:Page         {kg_id: r.toKgId})
-            MERGE (tc)-[rel:HAS_PAGE]->(p)
-            SET rel.pageNumber = r.pageNumber
-        """, links)
-    log.info(f"  Upserted {len(rows)} Page nodes")
-
-
-# ---------------------------------------------------------------------------
-# TXT: CellIndex (hasContent[].structure.tabular.cellIndex[])
+# TXT: CellIndex (hasContent[].tabular.cellIndex[])
 # Edge: TextContent -[HAS_CELL {rowNumber, columnName}]-> CellIndex
 # ---------------------------------------------------------------------------
 def load_cell_index(loader, records, doc_kg_id_map):
@@ -1802,7 +2028,7 @@ def load_cell_index(loader, records, doc_kg_id_map):
                 col  = _s(cell.get("columnName",""))
                 row  = cell.get("rowNumber", 0)
                 kg_id = _kg_id("cell_weak", tc_kg_id, col, str(row))[0]
-                rows.append({"kg_id": kg_id, "kg_key_type": "cell_weak",
+                rows.append({"kg_id": kg_id, "kg_key_type": "cell", "confidence": "weak",
                              "columnName": col,
                              "rowNumber": row,
                              "value": _s(cell.get("value")),
@@ -1827,7 +2053,7 @@ def load_cell_index(loader, records, doc_kg_id_map):
 
 
 # ---------------------------------------------------------------------------
-# Identifiers (TXT: entities.identifiers[], XLS: sharedEntities.identifiers[])
+# Identifiers — all types: hasContent[].entities.identifiers[]
 # Edge: Document -[HAS_IDENTIFIER {pageNumber}]-> Identifier
 # ---------------------------------------------------------------------------
 def load_identifiers(loader, records, file_type, doc_kg_id_map):
@@ -1836,10 +2062,18 @@ def load_identifiers(loader, records, file_type, doc_kg_id_map):
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
         idents = []
+        # All types: hasContent[].entities.identifiers[]
         for hc in _list(out.get("hasContent", [])):
             if isinstance(hc, dict):
                 idents += _list(hc.get("entities", {}).get("identifiers", []))
-        idents += _list(out.get("sharedEntities", {}).get("identifiers", []))
+        # EMAIL: hasPart[].entities.identifiers[]
+        for msg in _list(out.get("hasPart", [])):
+            idents += _list(msg.get("entities", {}).get("identifiers", []))
+        # PPT: hasContent.slides[].entities.identifiers[]
+        hc_ppt = out.get("hasContent", {})
+        if isinstance(hc_ppt, dict):
+            for slide in _list(hc_ppt.get("slides", [])):
+                idents += _list(slide.get("entities", {}).get("identifiers", []))
         for ident in idents:
             if not isinstance(ident, dict):
                 continue
@@ -1848,7 +2082,7 @@ def load_identifiers(loader, records, file_type, doc_kg_id_map):
             if not ival:
                 continue
             kg_id = _kg_id("ident_weak", doc_kg_id, itype, ival)[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "ident_weak",
+            rows.append({"kg_id": kg_id, "kg_key_type": "ident", "confidence": "weak",
                          "identifierType": itype, "value": ival})
             links.append({"fromKgId": doc_kg_id, "toKgId": kg_id,
                           "pageNumber": ident.get("pageNumber", 0)})
@@ -1866,10 +2100,11 @@ def load_identifiers(loader, records, file_type, doc_kg_id_map):
 
 
 # ---------------------------------------------------------------------------
-# EmbeddedObjects
-# DOC: hasContent[].visuals.charts[], hasContent[].visuals.tables[]
-# PPT: hasContent.slides[].embeddedObjects[]
-# XLS: hasContent[].sheetObjects.charts/embeddedImages/cellComments/dataValidations
+# EmbeddedObjects — unified visuals.embeddedObjects[] path
+# DOC: hasContent[].visuals.embeddedObjects[]
+# PPT: hasContent.slides[].visuals.embeddedObjects[]
+# XLS: hasContent[].sheetObjects.visuals.embeddedObjects[]
+
 # Edge: Document -[HAS_EMBEDDED_OBJECT {pageNumber, objectType}]-> EmbeddedObject
 # ---------------------------------------------------------------------------
 def load_embedded_objects(loader, records, file_type, doc_kg_id_map):
@@ -1877,20 +2112,19 @@ def load_embedded_objects(loader, records, file_type, doc_kg_id_map):
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
-        items = []  # (obj_dict, obj_type, page_number)
+        items = []  # (obj_dict, page_number)
 
-        if file_type == "DOC":
+        if file_type in ("DOC", "XLS"):
             for hc in _list(out.get("hasContent", [])):
                 if not isinstance(hc, dict):
                     continue
                 pn = hc.get("pageNumber", 0)
-                visuals = hc.get("visuals", {}) or {}
-                for chart in _list(visuals.get("charts", [])):
-                    items.append((chart if isinstance(chart, dict) else {"title": _s(chart)},
-                                  "chart", pn))
-                for table in _list(visuals.get("tables", [])):
-                    items.append((table if isinstance(table, dict) else {"title": _s(table)},
-                                  "table", pn))
+                # DOC/PPT: visuals.embeddedObjects[]
+                for emb in _list(hc.get("visuals", {}).get("embeddedObjects", [])):
+                    items.append((emb if isinstance(emb, dict) else {}, pn))
+                # XLS: sheetObjects.visuals.embeddedObjects[]
+                for emb in _list(hc.get("sheetObjects", {}).get("visuals", {}).get("embeddedObjects", [])):
+                    items.append((emb if isinstance(emb, dict) else {}, pn))
 
         elif file_type == "PPT":
             slides = out.get("hasContent", {})
@@ -1899,44 +2133,22 @@ def load_embedded_objects(loader, records, file_type, doc_kg_id_map):
                     if not isinstance(slide, dict):
                         continue
                     pn = slide.get("pageNumber", 0)
-                    for emb in _list(slide.get("embeddedObjects", [])):
-                        items.append((emb if isinstance(emb, dict) else {"title": _s(emb)},
-                                      "embedded", pn))
+                    for emb in _list(slide.get("visuals", {}).get("embeddedObjects", [])):
+                        items.append((emb if isinstance(emb, dict) else {}, pn))
 
-        elif file_type == "XLS":
-            for hc in _list(out.get("hasContent", [])):
-                if not isinstance(hc, dict):
-                    continue
-                pn = hc.get("pageNumber", 0)
-                sobjs = hc.get("sheetObjects", {}) or {}
-                for chart in _list(sobjs.get("charts", [])):
-                    items.append((chart if isinstance(chart, dict) else {"title": _s(chart)},
-                                  "chart", pn))
-                for img in _list(sobjs.get("embeddedImages", [])):
-                    items.append((img if isinstance(img, dict) else {"title": _s(img)},
-                                  "image", pn))
-                for comment in _list(sobjs.get("cellComments", [])):
-                    items.append((comment if isinstance(comment, dict) else {"title": _s(comment)},
-                                  "comment", pn))
-                for dv in _list(sobjs.get("dataValidations", [])):
-                    items.append((dv if isinstance(dv, dict) else {"title": _s(dv)},
-                                  "validation", pn))
-
-        for i, (obj, obj_type, pn) in enumerate(items):
-            title = _s(obj.get("title","") if isinstance(obj, dict) else "")
-            kg_id = _kg_id("emb_weak", doc_kg_id, obj_type, str(pn), title, str(i))[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "emb_weak",
+        for i, (obj, pn) in enumerate(items):
+            obj_type = _s(obj.get("objectType", "embedded"))
+            file_name = _s(obj.get("fileName", ""))
+            kg_id = _kg_id("emb_weak", doc_kg_id, obj_type, str(pn), file_name, str(i))[0]
+            rows.append({"kg_id": kg_id, "kg_key_type": "emb", "confidence": "weak",
                          "objectType": obj_type,
-                         "title": title,
-                         "notes": _s(obj.get("notes","") if isinstance(obj, dict) else ""),
-                         "source": _s(obj.get("source","") if isinstance(obj, dict) else ""),
-                         "chartType": _s(obj.get("chartType","") if isinstance(obj, dict) else ""),
-                         "dataSource": _s(obj.get("dataSource","") if isinstance(obj, dict) else "")})
+                         "fileName":   file_name,
+                         "notes":      _s(obj.get("notes", ""))})
             links.append({"fromKgId": doc_kg_id, "toKgId": kg_id,
                           "pageNumber": pn, "objectType": obj_type})
     if rows:
-        loader.run_batch(_generic_upsert_query("EmbeddedObject", [
-            "objectType","title","notes","source","chartType","dataSource"]), rows)
+        loader.run_batch(_generic_upsert_query("EmbeddedObject",
+            ["objectType","fileName","notes"]), rows)
         loader.run_batch("""
             UNWIND $rows AS r
             MATCH (d:Document       {kg_id: r.fromKgId})
@@ -1948,49 +2160,33 @@ def load_embedded_objects(loader, records, file_type, doc_kg_id_map):
 
 
 # ---------------------------------------------------------------------------
-# Procedures (TXT: structure.procedures[], PPT: slides[].procedures[])
+# Procedures — TXT only
+# TXT: hasContent[].structure.procedures[]
 # Edge: Document -[HAS_PROCEDURE {pageNumber}]-> Procedure
 # ---------------------------------------------------------------------------
 def load_procedures(loader, records, file_type, doc_kg_id_map):
     rows, links = [], []
+    if file_type != "TXT":
+        return
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
-        items = []  # (proc_dict, page_number)
-
-        if file_type == "TXT":
-            for hc in _list(out.get("hasContent", [])):
-                if not isinstance(hc, dict):
-                    continue
-                for proc in _list(hc.get("structure", {}).get("procedures", [])):
-                    items.append((proc, hc.get("pageNumber", 0)))
-
-        elif file_type == "PPT":
-            slides = out.get("hasContent", {})
-            if isinstance(slides, dict):
-                for slide in _list(slides.get("slides", [])):
-                    if not isinstance(slide, dict):
-                        continue
-                    pn = slide.get("pageNumber", 0)
-                    for proc in _list(slide.get("procedures", [])):
-                        items.append((proc, pn))
-
-        for i, (proc, pn) in enumerate(items):
-            if not isinstance(proc, dict):
-                proc = {"title": _s(proc)}
-            title = _s(proc.get("title",""))
-            kg_id = _kg_id("proc_weak", doc_kg_id, title, str(pn), str(i))[0]
-            rows.append({"kg_id": kg_id, "kg_key_type": "proc_weak",
-                         "title": title,
-                         "preconditions": _s(proc.get("preconditions")),
-                         "postconditions": _s(proc.get("postconditions")),
-                         "pageNumber": pn,
-                         "synopsis": _s(proc.get("synopsis")),
-                         "steps": _s(proc.get("steps"))})
-            links.append({"fromKgId": doc_kg_id, "toKgId": kg_id, "pageNumber": pn})
+        for hc in _list(out.get("hasContent", [])):
+            if not isinstance(hc, dict):
+                continue
+            pn = hc.get("pageNumber", 0)
+            for i, proc in enumerate(_list(hc.get("structure", {}).get("procedures", []))):
+                if not isinstance(proc, dict):
+                    proc = {"title": _s(proc)}
+                title = _s(proc.get("title", ""))
+                kg_id = _kg_id("proc_weak", doc_kg_id, title, str(pn), str(i))[0]
+                rows.append({"kg_id": kg_id, "kg_key_type": "proc", "confidence": "weak",
+                             "title":      title,
+                             "pageNumber": proc.get("pageNumber", pn)})
+                links.append({"fromKgId": doc_kg_id, "toKgId": kg_id,
+                              "pageNumber": proc.get("pageNumber", pn)})
     if rows:
-        loader.run_batch(_generic_upsert_query("Procedure", [
-            "title","preconditions","postconditions","pageNumber","synopsis","steps"]), rows)
+        loader.run_batch(_generic_upsert_query("Procedure", ["title","pageNumber"]), rows)
         loader.run_batch("""
             UNWIND $rows AS r
             MATCH (d:Document  {kg_id: r.fromKgId})
@@ -1998,7 +2194,7 @@ def load_procedures(loader, records, file_type, doc_kg_id_map):
             MERGE (d)-[rel:HAS_PROCEDURE]->(p)
             SET rel.pageNumber = r.pageNumber
         """, links)
-    log.info(f"  Upserted {len(rows)} Procedure nodes [{file_type}]")
+    log.info(f"  Upserted {len(rows)} Procedure nodes [TXT]")
 
 
 # ---------------------------------------------------------------------------
@@ -2012,35 +2208,40 @@ def load_procedures(loader, records, file_type, doc_kg_id_map):
 def load_mention_edges(loader, records, file_type, doc_kg_id_map):
     person_links, pslide_links, drug_slide_links = [], [], []
     pmsg_links, org_txt_links, prod_txt_links = [], [], []
-    loc_txt_links, listed_in_links = [], []
+    loc_txt_links = []
+    porg_links = []
 
     for rec in records:
         doc_kg_id = doc_kg_id_map.get(_s(rec.get("id")), "")
         out = rec.get("output", {})
 
-        # MENTIONS_PERSON — DOC hasContent.entities.people, XLS sharedEntities.people
-        if file_type in ("DOC", "XLS"):
-            sources = []
+        # MENTIONS_PERSON — hasContent[].entities.people[] (DOC, PPT, XLS, TXT)
+        # Removed: sharedEntities.people (XLS dropped sharedEntities)
+        if file_type in ("DOC", "PPT", "XLS", "TXT"):
             for hc in _list(out.get("hasContent", []) if isinstance(out.get("hasContent"), list) else []):
                 if isinstance(hc, dict):
-                    sources += _list(hc.get("entities", {}).get("people", []))
-            sources += _list(out.get("sharedEntities", {}).get("people", []))
-            for p in sources:
-                if not isinstance(p, dict):
-                    continue
-                p_kg_id, _ = _person_kg_id(p.get("email"), p.get("name"), p.get("organization",""))
-                if p_kg_id:
-                    person_links.append({"fromKgId": doc_kg_id, "toKgId": p_kg_id,
-                                         "pageNumber": p.get("pageNumber", 0)})
+                    for p in _list(hc.get("entities", {}).get("people", [])):
+                        if not isinstance(p, dict):
+                            continue
+                        p_kg_id, _ = _person_kg_id(p.get("email"), p.get("name"), p.get("organization",""))
+                        if p_kg_id:
+                            person_links.append({"fromKgId": doc_kg_id, "toKgId": p_kg_id,
+                                                 "pageNumber": p.get("pageNumber", 0)})
+                            org_name = _s(p.get("organization", ""))
+                            if org_name:
+                                o_kg_id, _ = _org_kg_id(org_name)
+                                if o_kg_id:
+                                    porg_links.append({"personKgId": p_kg_id, "orgKgId": o_kg_id})
 
-        # MENTIONS_PERSON_IN_MSG — EMAIL hasPart.semanticMentions.people
+        # MENTIONS_PERSON_IN_MSG — EMAIL hasPart[].entities.people[]
+        # Path updated: semanticMentions.people -> entities.people
+        # Key updated: identifier removed from EmailMessage key
         if file_type == "EMAIL":
             for msg in _list(out.get("hasPart", [])):
-                identifier = _s(msg.get("identifier"))
-                subject    = _s(msg.get("subject"))
-                date_sent  = _s(msg.get("dateSent"))
-                msg_kg_id  = _kg_id("msg_strong", identifier, subject, date_sent)[0]
-                for p in _list(msg.get("semanticMentions", {}).get("people", [])):
+                subject   = _s(msg.get("subject"))
+                date_sent = _s(msg.get("dateSent"))
+                msg_kg_id = _kg_id("msg_strong", subject, date_sent)[0]
+                for p in _list(msg.get("entities", {}).get("people", [])):
                     if not isinstance(p, dict):
                         continue
                     p_kg_id, _ = _person_kg_id(p.get("email"), p.get("name"))
@@ -2048,6 +2249,7 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
                         pmsg_links.append({"fromKgId": msg_kg_id, "toKgId": p_kg_id})
 
         # MENTIONS_PERSON_ON_SLIDE + MENTIONS_DRUG_ON_SLIDE — PPT
+        # Path updated: semanticMentions[] -> entities (single object per slide)
         if file_type == "PPT":
             slides = out.get("hasContent", {})
             if isinstance(slides, dict):
@@ -2056,25 +2258,25 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
                         continue
                     pn = slide.get("pageNumber", 0)
                     slide_kg_id = _kg_id("slide_weak", doc_kg_id, str(pn))[0]
-                    for sm in _list(slide.get("semanticMentions", [])):
-                        if not isinstance(sm, dict):
+                    entities = slide.get("entities", {})
+                    if not isinstance(entities, dict):
+                        continue
+                    for p in _list(entities.get("people", [])):
+                        if not isinstance(p, dict):
                             continue
-                        for p in _list(sm.get("people", [])):
-                            if not isinstance(p, dict):
-                                continue
-                            p_kg_id, _ = _person_kg_id(p.get("email"), p.get("name"))
-                            if p_kg_id:
-                                pslide_links.append({"fromKgId": slide_kg_id,
-                                                     "toKgId": p_kg_id,
+                        p_kg_id, _ = _person_kg_id(p.get("email"), p.get("name"))
+                        if p_kg_id:
+                            pslide_links.append({"fromKgId": slide_kg_id,
+                                                 "toKgId": p_kg_id,
+                                                 "pageNumber": pn})
+                    for drug in _list(entities.get("drugs", [])):
+                        if not isinstance(drug, dict):
+                            continue
+                        d_kg_id, _ = _drug_kg_id(drug)
+                        if d_kg_id:
+                            drug_slide_links.append({"fromKgId": slide_kg_id,
+                                                     "toKgId": d_kg_id,
                                                      "pageNumber": pn})
-                        for drug in _list(sm.get("drugs", [])):
-                            if not isinstance(drug, dict):
-                                continue
-                            d_kg_id, _ = _drug_kg_id(drug)
-                            if d_kg_id:
-                                drug_slide_links.append({"fromKgId": slide_kg_id,
-                                                         "toKgId": d_kg_id,
-                                                         "pageNumber": pn})
 
         # MENTIONS_ORG_IN_TEXT / MENTIONS_PRODUCT_IN_TEXT / MENTIONS_LOCATION_IN_TEXT — TXT
         if file_type == "TXT":
@@ -2087,7 +2289,8 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
                     name = _s(org.get("name") if isinstance(org, dict) else org)
                     if name:
                         o_kg_id, _ = _org_kg_id(name)
-                        org_txt_links.append({"fromKgId": tc_kg_id, "toKgId": o_kg_id})
+                        if o_kg_id:
+                            org_txt_links.append({"fromKgId": tc_kg_id, "toKgId": o_kg_id})
                 for prod in _list(hc.get("entities", {}).get("products", [])):
                     if not isinstance(prod, dict):
                         continue
@@ -2099,17 +2302,8 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
                 for loc in _list(hc.get("entities", {}).get("locations", [])):
                     name = _s(loc.get("name") if isinstance(loc, dict) else loc)
                     if name:
-                        l_kg_id, _ = _kg_id("loc_strong", name.lower()), "loc_strong"
-                        loc_txt_links.append({"fromKgId": tc_kg_id, "toKgId": l_kg_id[0]})
-
-        # LISTED_IN — XLS orgs listed in document
-        if file_type == "XLS":
-            for org_obj in _list(out.get("sharedEntities", {}).get("organization", [])):
-                name = _s(org_obj.get("name") if isinstance(org_obj, dict) else org_obj)
-                if name:
-                    o_kg_id, _ = _org_kg_id(name)
-                    if o_kg_id:
-                        listed_in_links.append({"fromKgId": o_kg_id, "toKgId": doc_kg_id})
+                        l_kg_id = _kg_id("loc_strong", name.lower())[0]
+                        loc_txt_links.append({"fromKgId": tc_kg_id, "toKgId": l_kg_id})
 
     # Write all edge batches
     if person_links:
@@ -2165,13 +2359,13 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
             MATCH (l:Location     {kg_id: r.toKgId})
             MERGE (tc)-[:MENTIONS_LOCATION_IN_TEXT]->(l)
         """, loc_txt_links)
-    if listed_in_links:
+    if porg_links:
         loader.run_batch("""
             UNWIND $rows AS r
-            MATCH (o:Organization {kg_id: r.fromKgId})
-            MATCH (d:Document     {kg_id: r.toKgId})
-            MERGE (o)-[:LISTED_IN]->(d)
-        """, listed_in_links)
+            MATCH (p:Person       {kg_id: r.personKgId})
+            MATCH (o:Organization {kg_id: r.orgKgId})
+            MERGE (p)-[:WORKS_FOR]->(o)
+        """, porg_links)
     log.info(f"  Wrote mention edges [{file_type}]")
 
 
@@ -2181,11 +2375,14 @@ def load_mention_edges(loader, records, file_type, doc_kg_id_map):
 
 def main():
     parser = argparse.ArgumentParser(description="Load cleaned JSONL into Neo4j KG.")
-    parser.add_argument("--doc",        default="clean/DOC_clean.jsonl")
-    parser.add_argument("--email",      default="clean/EMAIL_clean.jsonl")
-    parser.add_argument("--ppt",        default="clean/PPT_clean.jsonl")
-    parser.add_argument("--xls",        default="clean/XLS_clean.jsonl")
-    parser.add_argument("--txt",        default="clean/TXT_clean.jsonl")
+    parser.add_argument("--clean-dir",  default=None,
+                        help="Folder containing *_clean.jsonl files (e.g. ./clean). "
+                             "Overrides individual --doc/--email/etc. if provided.")
+    parser.add_argument("--doc",        default=None)
+    parser.add_argument("--email",      default=None)
+    parser.add_argument("--ppt",        default=None)
+    parser.add_argument("--xls",        default=None)
+    parser.add_argument("--txt",        default=None)
     parser.add_argument("--uri",        default="bolt://localhost:7687")
     parser.add_argument("--user",       default="neo4j")
     parser.add_argument("--password",   default="neo4j")
@@ -2197,23 +2394,38 @@ def main():
                         help="Max records per file — useful for testing")
     args = parser.parse_args()
 
-    files = {
-        "DOC":   args.doc,
-        "EMAIL": args.email,
-        "PPT":   args.ppt,
-        "XLS":   args.xls,
-        "TXT":   args.txt,
-    }
+    # If --clean-dir is given, resolve all file paths from that folder.
+    # Individual --doc/--email/etc. flags override per-type if also provided.
+    if args.clean_dir:
+        d = Path(args.clean_dir)
+        files = {
+            "DOC":   str(args.doc   or d / "DOC_clean.jsonl"),
+            "EMAIL": str(args.email or d / "EMAIL_clean.jsonl"),
+            "PPT":   str(args.ppt   or d / "PPT_clean.jsonl"),
+            "XLS":   str(args.xls   or d / "XLS_clean.jsonl"),
+            "TXT":   str(args.txt   or d / "TXT_clean.jsonl"),
+        }
+    else:
+        files = {
+            "DOC":   args.doc,
+            "EMAIL": args.email,
+            "PPT":   args.ppt,
+            "XLS":   args.xls,
+            "TXT":   args.txt,
+        }
 
     log.info("Loading JSONL files...")
     records_map = {}
     for ft, path in files.items():
+        if not path:
+            log.info(f"  {ft}: skipped — no input provided")
+            continue
         p = Path(path)
         if p.exists():
             records_map[ft] = load_jsonl(path, limit=args.limit)
             log.info(f"  {ft}: {len(records_map[ft])} records from {path}")
         else:
-            log.warning(f"  {ft}: file not found — {path}, skipping")
+            log.info(f"  {ft}: skipped — file not found: {path}")
 
     loader = KGLoader(
         uri        = args.uri,
