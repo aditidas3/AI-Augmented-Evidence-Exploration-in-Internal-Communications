@@ -1,0 +1,396 @@
+[
+  {
+    "index": 1,
+    "question": "How did Walgreens respond internally to DEA enforcement actions on its controlled-substance dispensing practices between 2010 and 2016, and which employees inside the company led that response?",
+    "response": {
+      "Header": {
+        "intent_id": "I-2010-walgreens-response-001",
+        "schema_version": "intent_bundle_compact_v1",
+        "question_id": "Q-walgreens-response-001",
+        "created_at": "1970-01-01T00:00:00Z",
+        "question_text": "How did Walgreens respond internally to DEA enforcement actions on its controlled-substance dispensing practices between 2010 and 2016, and which employees inside the company led that response?"
+      },
+      "EntityHints": [
+        {
+          "entity_id": "SE1",
+          "surface": "Walgreens",
+          "category": "ENTITY_ORGANIZATION",
+          "normalized": "Walgreens",
+          "confidence": 0.99,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE2",
+          "surface": "DEA",
+          "category": "ENTITY_ORGANIZATION",
+          "normalized": "Drug Enforcement Administration",
+          "confidence": 0.95,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE3",
+          "surface": "enforcement actions",
+          "category": "ENTITY_EVENT",
+          "normalized": "DEA enforcement actions",
+          "confidence": 0.9,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE4",
+          "surface": "controlled-substance dispensing practices",
+          "category": "ENTITY_TOPIC",
+          "normalized": "controlled substance dispensing",
+          "confidence": 0.85,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE5",
+          "surface": "internally",
+          "category": "ENTITY_VISIBILITY_LEVEL",
+          "normalized": "internal",
+          "confidence": 0.8,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE6",
+          "surface": "response",
+          "category": "ENTITY_ACTION_ITEM",
+          "normalized": "internal response",
+          "confidence": 0.75,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE7",
+          "surface": "employees",
+          "category": "ENTITY_PERSON",
+          "normalized": "",
+          "confidence": 0.7,
+          "qualifiers": {}
+        },
+        {
+          "entity_id": "SE8",
+          "surface": "led",
+          "category": "ENTITY_ROLE",
+          "normalized": "leadership",
+          "confidence": 0.75,
+          "qualifiers": {}
+        }
+      ],
+      "ScopeSpec": {
+        "mode": "PREFER",
+        "collections": {
+          "include": [],
+          "exclude": []
+        },
+        "artifact_types": [
+          "ARTIFACT_EMAIL",
+          "ARTIFACT_THREAD",
+          "ARTIFACT_DOCUMENT",
+          "ARTIFACT_PDF"
+        ],
+        "time_filter": {
+          "op": "between",
+          "start": "2010-01-01T00:00:00Z",
+          "end": "2016-12-31T23:59:59Z",
+          "timezone": "America/Los_Angeles"
+        },
+        "exclude_features": [
+          "duplicate",
+          "near_duplicate"
+        ],
+        "metadata_filters": [],
+        "scope_notes": "Focus on internal Walgreens communications and documents regarding DEA enforcement actions on controlled substance dispensing from 2010 to 2016."
+      },
+      "RetrievalSpec": {
+        "query_text": "Walgreens internal response DEA enforcement actions controlled substance dispensing practices 2010 2016 employees led coordination",
+        "query_expansions": [
+          "compliance",
+          "regulatory",
+          "investigation",
+          "policy change",
+          "internal memo",
+          "meeting notes",
+          "strategy"
+        ],
+        "field_boosts": {
+          "subject": 2.0,
+          "title": 1.8,
+          "participants": 1.5,
+          "body": 1.0
+        },
+        "top_k_lex": 250,
+        "top_k_sem": 250,
+        "fusion_method": "rrf"
+      },
+      "SlotSpec": {
+        "global_trigger": {
+          "trigger_id": "T-global-1",
+          "terms": [
+            "Walgreens",
+            "DEA",
+            "enforcement",
+            "controlled substance",
+            "dispensing",
+            "internal",
+            "response",
+            "employees",
+            "led",
+            "2010",
+            "2016",
+            "compliance",
+            "regulatory",
+            "actions"
+          ]
+        },
+        "slots": [
+          {
+            "slot_id": "S1",
+            "slot_type": "WHO",
+            "description": "Employees inside Walgreens who led the internal response to DEA enforcement actions.",
+            "allowed_artifact_types": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT",
+              "ARTIFACT_PDF",
+              "ARTIFACT_PRESENTATION"
+            ],
+            "target_schema_id": "schema:WHO"
+          },
+          {
+            "slot_id": "S2",
+            "slot_type": "WHAT",
+            "description": "The nature and details of Walgreens' internal response to DEA enforcement actions.",
+            "allowed_artifact_types": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT",
+              "ARTIFACT_PDF",
+              "ARTIFACT_PRESENTATION"
+            ],
+            "target_schema_id": "schema:WHAT"
+          },
+          {
+            "slot_id": "S3",
+            "slot_type": "WHEN",
+            "description": "Timeline of the internal response activities between 2010 and 2016.",
+            "allowed_artifact_types": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT",
+              "ARTIFACT_PDF",
+              "ARTIFACT_PRESENTATION"
+            ],
+            "target_schema_id": "schema:WHEN"
+          },
+          {
+            "slot_id": "S4",
+            "slot_type": "HOW",
+            "description": "Processes, coordination, and intermediaries involved in the internal response.",
+            "allowed_artifact_types": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT",
+              "ARTIFACT_PDF",
+              "ARTIFACT_PRESENTATION"
+            ],
+            "target_schema_id": "schema:HOW_INTERMEDIARIES"
+          },
+          {
+            "slot_id": "S5",
+            "slot_type": "EVIDENCE",
+            "description": "Verbatim quotes and spans from internal communications showing the response and leadership, with provenance.",
+            "allowed_artifact_types": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT",
+              "ARTIFACT_PDF",
+              "ARTIFACT_PRESENTATION"
+            ],
+            "target_schema_id": "schema:EVIDENCE_CHAIN"
+          }
+        ],
+        "graph_spec": {
+          "query_name": "walgreens-response",
+          "vars": [
+            {
+              "var": "C",
+              "type": "ENTITY_COLLECTION",
+              "role": "collection_scope",
+              "hint": "Walgreens internal documents",
+              "hard": false
+            },
+            {
+              "var": "A",
+              "type": "ENTITY_DOCUMENT",
+              "role": "internal_artifact",
+              "hint": "Email, memo, report",
+              "hard": false
+            },
+            {
+              "var": "P",
+              "type": "ENTITY_PERSON",
+              "role": "employee_leader",
+              "hint": "Walgreens employee",
+              "hard": false
+            },
+            {
+              "var": "O",
+              "type": "ENTITY_ORGANIZATION",
+              "role": "company",
+              "hint": "Walgreens",
+              "hard": true
+            },
+            {
+              "var": "R",
+              "type": "ENTITY_ROLE",
+              "role": "leadership_role",
+              "hint": "e.g., compliance head, legal lead",
+              "hard": false
+            },
+            {
+              "var": "E",
+              "type": "ENTITY_EVENT",
+              "role": "enforcement_action",
+              "hint": "DEA enforcement action on dispensing",
+              "hard": false
+            },
+            {
+              "var": "AI",
+              "type": "ENTITY_ACTION_ITEM",
+              "role": "internal_response",
+              "hint": "Response activities like policy changes, training",
+              "hard": false
+            },
+            {
+              "var": "TS",
+              "type": "ENTITY_TEXT_SPAN",
+              "role": "evidence_span",
+              "hint": "Verbatim quote about response or leadership",
+              "hard": false
+            },
+            {
+              "var": "VL",
+              "type": "ENTITY_VISIBILITY_LEVEL",
+              "role": "internal_visibility",
+              "hint": "Internal only",
+              "hard": false
+            }
+          ],
+          "edges": [
+            {
+              "src": "C",
+              "rel": "EVIDENCED_BY",
+              "dst": "A",
+              "hard": false,
+              "notes": "Anchor artifacts to collection scope"
+            },
+            {
+              "src": "A",
+              "rel": "INTERNAL_ONLY",
+              "dst": "VL",
+              "hard": false,
+              "notes": "Focus on internal communications"
+            },
+            {
+              "src": "A",
+              "rel": "ABOUT",
+              "dst": "E",
+              "hard": false,
+              "notes": "Artifact discusses DEA enforcement"
+            },
+            {
+              "src": "A",
+              "rel": "ABOUT",
+              "dst": "AI",
+              "hard": false,
+              "notes": "Artifact discusses response actions"
+            },
+            {
+              "src": "A",
+              "rel": "AUTHORED_BY",
+              "dst": "P",
+              "hard": false,
+              "notes": "Employee authored artifact"
+            },
+            {
+              "src": "P",
+              "rel": "AFFILIATED_WITH",
+              "dst": "O",
+              "hard": false,
+              "notes": "Employee works for Walgreens"
+            },
+            {
+              "src": "P",
+              "rel": "REPRESENTS",
+              "dst": "R",
+              "hard": false,
+              "notes": "Employee holds leadership role"
+            },
+            {
+              "src": "P",
+              "rel": "INVOLVED_IN",
+              "dst": "AI",
+              "hard": false,
+              "notes": "Employee involved in response"
+            },
+            {
+              "src": "A",
+              "rel": "QUOTES_SPAN",
+              "dst": "TS",
+              "hard": false,
+              "notes": "Artifact contains verbatim evidence span"
+            },
+            {
+              "src": "AI",
+              "rel": "COORDINATED_RESPONSE_TO",
+              "dst": "E",
+              "hard": false,
+              "notes": "Response coordinated to enforcement"
+            }
+          ],
+          "temporal_constraints": [
+            {
+              "kind": "ORDER",
+              "before": "E",
+              "after": "AI",
+              "notes": "Response follows enforcement action"
+            }
+          ],
+          "cross_artifact_constraints": {
+            "required_families": [
+              "ARTIFACT_EMAIL",
+              "ARTIFACT_THREAD",
+              "ARTIFACT_DOCUMENT"
+            ],
+            "bridge_edge_types": [
+              "THREAD",
+              "ATTACHMENT",
+              "SEMANTIC"
+            ],
+            "attachment_expectation": {
+              "thread_must_have_attachments": false
+            }
+          },
+          "objective": {
+            "primary": "MAX_EVIDENCE_COVER",
+            "secondary": [
+              "MAX_ROLE_COMPLETENESS",
+              "MAX_TEMPORAL_COHERENCE",
+              "MAX_CROSS_ARTIFACT_BRIDGES"
+            ],
+            "return_top_k_alternatives": 3
+          }
+        }
+      },
+      "Diagnostics": {
+        "rule_hits": [
+          "R_time_2010_2016",
+          "R_span_required",
+          "R_internal_visibility",
+          "R_leadership_extraction"
+        ],
+        "notes": "Question specifies a clear time window (2010-2016) and seeks internal response details and employee leaders. No specific collection is named, so scope is broad. Entity resolution for employees and roles may be uncertain without explicit metadata. Timestamps may be incomplete, requiring temporal inference. The graph spec includes collection anchoring, visibility, and evidence spans to ensure fidelity."
+      }
+    }
+  }
+]

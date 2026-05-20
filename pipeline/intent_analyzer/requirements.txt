@@ -1,0 +1,6 @@
+spacy>=3.0
+spacy-lookups-data
+scikit-learn>=1.0
+joblib>=1.0
+openai>=1.0.0
+python-dotenv>=1.0.0
