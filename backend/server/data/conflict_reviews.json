@@ -1,0 +1,24 @@
+{
+  "example-completed": {
+    "723836eb-85bb-509b-9a8a-13eca0821161": {
+      "run_id": "example-completed",
+      "edge_id": "723836eb-85bb-509b-9a8a-13eca0821161",
+      "review_label": "UNRESOLVED",
+      "review_status": "unresolved",
+      "notes": "Use when expert review cannot decide from current evidence.",
+      "reviewed_by": "analyst",
+      "updated_at": "2026-05-19T17:40:46.276257+00:00",
+      "created_at": "2026-05-19T17:40:46.276257+00:00"
+    },
+    "2032600e-99d2-5353-b604-16da3e94ebc3": {
+      "run_id": "example-completed",
+      "edge_id": "2032600e-99d2-5353-b604-16da3e94ebc3",
+      "review_label": "UNRESOLVED",
+      "review_status": "unresolved",
+      "notes": "Use when expert review cannot decide from current evidence.",
+      "reviewed_by": "analyst",
+      "updated_at": "2026-05-19T18:52:08.421932+00:00",
+      "created_at": "2026-05-19T18:52:08.421932+00:00"
+    }
+  }
+}

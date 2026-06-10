@@ -1,0 +1,61 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    pull_policy: always
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  memgraph:
+    image: memgraph/memgraph-mage:latest
+    container_name: memgraph-mage
+    pull_policy: always
+    ports:
+      - "7688:7687"
+      - "7444:7444"
+    command: ["--log-level=TRACE"]
+
+  memgraph_eg:
+    image: memgraph/memgraph-mage:latest
+    container_name: memgraph-eg
+    pull_policy: always
+    ports:
+      - "7689:7687"
+      - "7445:7444"
+    command: ["--log-level=TRACE"]
+
+  # memgraph_rg:
+  #   image: memgraph/memgraph-mage:latest
+  #   container_name: memgraph-rg
+  #   pull_policy: always
+  #   ports:
+  #     - "7689:7687"
+  #     - "7446:7444"
+  #   command: ["--log-level=TRACE"]
+
+  # memgraph_bridge:
+  #   image: memgraph/memgraph-mage:latest
+  #   container_name: memgraph-bridge
+  #   pull_policy: always
+  #   ports:
+  #     - "7690:7687"
+  #     - "7447:7444"
+  #   command: ["--log-level=TRACE"]
+
+  lab:
+    image: memgraph/lab:latest
+    container_name: memgraph-lab
+    pull_policy: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - memgraph
+    environment:
+      - QUICK_CONNECT_MG_HOST=memgraph
+      - QUICK_CONNECT_MG_PORT=7687
+
+volumes:
+  qdrant_storage:

@@ -1,0 +1,114 @@
+[
+  {
+    "question_id": "question-example-walgreens-response",
+    "workspace_id": "workspace-default",
+    "text": "How did Walgreens respond internally to DEA enforcement actions on its controlled-substance dispensing practices between 2010 and 2016, and which employees inside the company led that response?",
+    "created_at": "2026-05-17T00:00:00+00:00",
+    "updated_at": "2026-05-17T00:00:00+00:00"
+  },
+  {
+    "question_id": "question-1779596319754",
+    "workspace_id": "workspace-default",
+    "text": "How did Walgreens respond internally to DEA enforcement actions on its controlled-substance dispensing practices between 2010 and 2016, and which employees inside the company led that response",
+    "created_at": "2026-05-24T04:18:39.754990+00:00",
+    "updated_at": "2026-05-24T04:18:39.754990+00:00"
+  },
+  {
+    "question_id": "question-1779643934550",
+    "workspace_id": "workspace-default",
+    "text": "Did Actavis systematically deploy multi-channel promotional campaigns for opioids like Oxymorphone and Kadian \u2014 including financially incentivized telemarketing, chain pharmacy targeting, and medical society sponsorships \u2014 while simultaneously participating in industry working groups ostensibly focused on anti-diversion efforts, creating a structural conflict between its commercial and compliance obligations?",
+    "created_at": "2026-05-24T17:32:14.550886+00:00",
+    "updated_at": "2026-05-24T17:32:14.550886+00:00"
+  },
+  {
+    "question_id": "question-1779818737498",
+    "workspace_id": "workspace-default",
+    "text": "Did Walgreens knowingly prioritize revenue over regulatory compliance in its dispensing of Schedule II opioids in Florida, as evidenced by internal emails discussing renaming \"Focus on Profit\" initiatives, concerns about self-documenting potential noncompliance, and the parallel data showing that red-flag prescription rates at Walgreens pharmacies in San Francisco exceeded 13% in peak years?",
+    "created_at": "2026-05-26T18:05:37.498685+00:00",
+    "updated_at": "2026-05-26T18:05:37.498685+00:00"
+  },
+  {
+    "question_id": "question-1779822836030",
+    "workspace_id": "workspace-default",
+    "text": "Did pharmaceutical manufacturers including Actavis and Cephalon maintain structurally inadequate suspicious order monitoring systems for years \u2014 despite internal awareness of DEA regulatory requirements \u2014 while simultaneously executing aggressive opioid promotional campaigns targeting pharmacies and prescribers through distributors such as McKesson, HD Smith, and Cardinal Health?",
+    "created_at": "2026-05-26T19:13:56.030524+00:00",
+    "updated_at": "2026-05-26T19:13:56.030524+00:00"
+  },
+  {
+    "question_id": "question-1780176880182",
+    "workspace_id": "workspace-default",
+    "text": "What legal document governed Walgreens dispensing policy for controlled substances, who was responsible for it, and under what legal authority?",
+    "created_at": "2026-05-30T21:34:40.182559+00:00",
+    "updated_at": "2026-05-30T21:34:40.182559+00:00"
+  },
+  {
+    "question_id": "question-1780181643751",
+    "workspace_id": "workspace-default",
+    "text": "When did Walgreens first implement a dispensing checklist for target drugs and how did the policy evolve over time?",
+    "created_at": "2026-05-30T22:54:03.751656+00:00",
+    "updated_at": "2026-05-30T22:54:03.751656+00:00"
+  },
+  {
+    "question_id": "question-1780423617077",
+    "workspace_id": "workspace-default",
+    "text": "What legal document governed Walgreens dispensing policy for controlled substances, who was responsible for it, and under what legal authority",
+    "created_at": "2026-06-02T18:06:57.077313+00:00",
+    "updated_at": "2026-06-02T18:06:57.077313+00:00"
+  },
+  {
+    "question_id": "question-1780428069520",
+    "workspace_id": "workspace-default",
+    "text": "Who were the senior legal and compliance officers responsible for Walgreens controlled substance dispensing policy between 2004 and 2010?",
+    "created_at": "2026-06-02T19:21:09.520061+00:00",
+    "updated_at": "2026-06-02T19:21:09.520061+00:00"
+  },
+  {
+    "question_id": "question-1780428079882",
+    "workspace_id": "workspace-default",
+    "text": "How did Walgreens communicate dispensing policy changes to pharmacy supervisors at the district level?",
+    "created_at": "2026-06-02T19:21:19.882379+00:00",
+    "updated_at": "2026-06-02T19:21:19.882379+00:00"
+  },
+  {
+    "question_id": "question-1780430388077",
+    "workspace_id": "workspace-default",
+    "text": "What settlement terms were agreed in the Walgreens controlled substance litigation and which legal instruments were cited?",
+    "created_at": "2026-06-02T19:59:48.077736+00:00",
+    "updated_at": "2026-06-02T19:59:48.077736+00:00"
+  },
+  {
+    "question_id": "question-1780430402082",
+    "workspace_id": "workspace-default",
+    "text": "What internal audits or compliance reviews did Walgreens conduct on controlled substance dispensing practices?",
+    "created_at": "2026-06-02T20:00:02.082072+00:00",
+    "updated_at": "2026-06-02T20:00:02.082072+00:00"
+  },
+  {
+    "question_id": "question-1780430419176",
+    "workspace_id": "workspace-default",
+    "text": "What was the complete chain of events from the identification of dispensing violations to the final settlement agreement, including who was involved, what documents governed each stage, and when each step occurred?",
+    "created_at": "2026-06-02T20:00:19.176415+00:00",
+    "updated_at": "2026-06-02T20:00:19.176415+00:00"
+  },
+  {
+    "question_id": "question-1780507431869",
+    "workspace_id": "workspace-default",
+    "text": "Which Walgreens district or regional managers were cited in litigation documents related to opioid dispensing?",
+    "created_at": "2026-06-03T17:23:51.869995+00:00",
+    "updated_at": "2026-06-03T17:23:51.869995+00:00"
+  },
+  {
+    "question_id": "question-1780531978287",
+    "workspace_id": "workspace-default",
+    "text": "What financial penalties did Walgreens pay as a result of dispensing violations?",
+    "created_at": "2026-06-04T00:12:58.287813+00:00",
+    "updated_at": "2026-06-04T00:12:58.287813+00:00"
+  },
+  {
+    "question_id": "question-1780532003932",
+    "workspace_id": "workspace-default",
+    "text": "How did Walgreens dispensing policy change after the 2006 checklist \u2014 was the original policy superseded by later documents?",
+    "created_at": "2026-06-04T00:13:23.932431+00:00",
+    "updated_at": "2026-06-04T00:13:23.932431+00:00"
+  }
+]

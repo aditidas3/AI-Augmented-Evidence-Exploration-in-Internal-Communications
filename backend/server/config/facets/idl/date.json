@@ -1,0 +1,36 @@
+{
+  "filter_id": "date",
+  "values": [
+    { "id": "no_date", "label": "No Date", "count": 2121011 },
+    { "id": "before_1950", "label": "< 1950", "count": 88010 },
+    {
+      "id": "decade_1950s",
+      "label": "1950s",
+      "count": 193196,
+      "children": [
+        { "id": "y1950", "label": "1950", "count": 8985 },
+        { "id": "y1951", "label": "1951", "count": 8306 },
+        { "id": "y1952", "label": "1952", "count": 9368 },
+        { "id": "y1953", "label": "1953", "count": 11739 },
+        { "id": "y1954", "label": "1954", "count": 27593 },
+        { "id": "y1955", "label": "1955", "count": 20603 }
+      ]
+    },
+    { "id": "decade_1960s", "label": "1960s", "count": 646173 },
+    { "id": "decade_1970s", "label": "1970s", "count": 1500223 },
+    { "id": "decade_1980s", "label": "1980s", "count": 3291756 },
+    {
+      "id": "decade_1990s",
+      "label": "1990s",
+      "count": 6110241,
+      "children": [
+        { "id": "y1990", "label": "1990", "count": 453681 },
+        { "id": "y1991", "label": "1991", "count": 454059 },
+        { "id": "y1992", "label": "1992", "count": 505458 },
+        { "id": "y1993", "label": "1993", "count": 568358 },
+        { "id": "y1994", "label": "1994", "count": 638975 },
+        { "id": "y1995", "label": "1995", "count": 742237 }
+      ]
+    }
+  ]
+}

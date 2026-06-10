@@ -1,0 +1,15 @@
+{
+  "filter_id": "type",
+  "values": [
+    { "id": "email", "label": "Email", "count": 7964833 },
+    { "id": "letter", "label": "Letter", "count": 3215917 },
+    { "id": "document", "label": "Document", "count": 2749922 },
+    { "id": "report", "label": "Report", "count": 2326922 },
+    { "id": "memo", "label": "Memo", "count": 1626263 },
+    { "id": "spreadsheet", "label": "Spreadsheet", "count": 1385827 },
+    { "id": "chart", "label": "Chart", "count": 1283352 },
+    { "id": "graph", "label": "Graph", "count": 1127630 },
+    { "id": "map", "label": "Map", "count": 996115 },
+    { "id": "table", "label": "Table", "count": 990717 }
+  ]
+}

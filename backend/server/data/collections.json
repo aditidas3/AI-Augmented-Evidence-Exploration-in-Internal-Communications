@@ -1,0 +1,10 @@
+[
+  {
+    "collection_id": "idl_all",
+    "name": "Industry Documents Library",
+    "description": "Cross-industry document corpus modeled on UCSF IDL-style collections and facets.",
+    "source_family": "industry_documents",
+    "document_count": 27698465,
+    "metadata_ref": "/api/metadata/idl"
+  }
+]

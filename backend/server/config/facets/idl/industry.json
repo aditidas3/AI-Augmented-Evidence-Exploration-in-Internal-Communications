@@ -1,0 +1,22 @@
+{
+  "filter_id": "industry",
+  "values": [
+    {
+      "id": "tobacco",
+      "label": "Tobacco",
+      "count": 19956191,
+      "children": [
+        { "id": "american_tobacco_records", "label": "American Tobacco Records", "count": 537268 },
+        { "id": "bat_africa_collection", "label": "BAT Africa Collection", "count": 273 },
+        { "id": "british_american_tobacco_records", "label": "British American Tobacco Records", "count": 1655077 },
+        { "id": "brown_williamson_records", "label": "Brown & Williamson Records", "count": 895622 },
+        { "id": "ca_tobacco_control_web_archives", "label": "CA Tobacco Control Web Archives", "count": 152 }
+      ]
+    },
+    { "id": "opioids", "label": "Opioids", "count": 7422476 },
+    { "id": "food", "label": "Food", "count": 173042 },
+    { "id": "chemical", "label": "Chemical", "count": 32058 },
+    { "id": "drug", "label": "Drug", "count": 5969 },
+    { "id": "fossil_fuel", "label": "Fossil Fuel", "count": 1161 }
+  ]
+}

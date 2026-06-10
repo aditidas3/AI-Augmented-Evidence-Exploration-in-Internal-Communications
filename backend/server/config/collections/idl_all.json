@@ -1,0 +1,15 @@
+{
+  "collection_id": "idl_all",
+  "label": "Industry Documents Library",
+  "supported_filters": {
+    "industry": { "values_ref": "../facets/idl/industry.json", "label": "Industry", "kind": "hierarchy", "selection": "multi" },
+    "type": { "values_ref": "../facets/idl/type.json" },
+    "brand": { "values_ref": "../facets/idl/brand.json", "label": "Brand", "kind": "enum", "selection": "multi" },
+    "drug": { "values_ref": "../facets/idl/drug.json", "label": "Drug", "kind": "enum", "selection": "multi" },
+    "chemical": { "values_ref": "../facets/idl/chemical.json", "label": "Chemical", "kind": "enum", "selection": "multi" },
+    "food": { "values_ref": "../facets/idl/food.json", "label": "Food", "kind": "enum", "selection": "multi" },
+    "subject": { "values_ref": "../facets/idl/subject.json", "label": "Subject", "kind": "enum", "selection": "multi" },
+    "availability": { "values_ref": "../facets/idl/availability.json" },
+    "date": { "values_ref": "../facets/idl/date.json" }
+  }
+}

@@ -1,0 +1,333 @@
+# collections/tobacco/ontology.yaml
+#
+# KG0 ontology definition for the UCSF tobacco / opioid litigation corpus.
+# Loaded at startup:  AlignConfig.with_ontology("collections/tobacco/ontology.yaml")
+#
+# Every label and relationship type below MUST actually exist in the graph
+# produced by the current kg0 pipeline (kg0_from_db.py + load_pages.py +
+# post_kg_rules.py). Stale names silently drop out of all ALIGN queries.
+
+entity_categories:
+  - PERSON
+  - ORGANIZATION
+  - COLLECTION
+  - DOCUMENT
+  - PAGE
+  - RISK_FINDING
+  - STRATEGY
+  - CLAIM
+  - EVENT
+  - TOPIC
+  - POLICY
+  - FRAMING
+  - CONCEPT
+  - LOCATION
+  - PRODUCT
+  - ROLE
+  - FUNCTION
+  - TEXT_SPAN
+  - EDIT_PROPOSAL
+  - ACTION_ITEM
+  - NARRATIVE
+  - VISIBILITY_LEVEL
+  - LEGAL_INSTRUMENT
+  - TEMPORAL_UNCERTAINTY
+
+edge_types:
+  # Structural (infrastructure layer)
+  - CONTAINS_DOCUMENTS     # Collection -> Document
+  - HAS_PAGE               # Document -> Page (added by load_pages.py)
+  - HAS_ABBREVIATION       # Entity -> Abbreviation
+  # Document -> Entity edges (from kg0_from_db LABEL_TO_DOC_REL)
+  - MENTIONS_PERSON
+  - MENTIONS_ORG
+  - MENTIONS_DRUG
+  - MENTIONS_PRODUCT
+  - MENTIONS_DATE
+  - MENTIONS_LOCATION_IN_TEXT
+  - HAS_EVENT
+  - HAS_METRIC
+  - HAS_RISK
+  - HAS_REQUIREMENT
+  - HAS_CLAIM
+  - HAS_IDENTIFIER
+  - CITES
+  # Entity <-> Entity edges (slugified LLM verbs, normalised by kg0_clean.py)
+  - WORKS_FOR
+  - AFFILIATED_WITH
+  - AUTHORED_BY
+  - SENT_TO
+  - CC_TO
+  - FORWARDED_TO
+  - HAS_EMAIL
+  - HAS_PHONE
+  - LOCATED_IN
+  - PART_OF
+  - CONTAINS
+  - REPORTS_TO
+  - LEADS
+  - MANAGES
+  - SUBSIDIARY_OF
+  - IS_A
+  - CLASSIFIED_AS
+  - LABELED_AS
+  - HAS_ROLE
+  - CONCERNS
+  - REFERENCES
+  - SUBMITTED_TO
+  - PRESENTED_AT
+  - PUBLISHED_BY
+  - APPROVED_BY
+  - GOVERNED_BY
+  - REVIEWED_BY
+  - ASSESSED_BY
+  - INVESTIGATED_BY
+  - FUNDED_BY
+  - DEVELOPED_BY
+  - MANUFACTURED_BY
+  - PROVIDES
+  - REQUIRES
+  - USES
+  - TARGETS
+  - MONITORS
+  - ENROLLED_IN
+  - INDICATED_FOR
+  - CONTRAINDICATED_FOR
+  - USE_WITH_CAUTION_IN
+  - HAS_ADVERSE_EFFECT
+  - ASSOCIATED_WITH_DRUG
+  - BRAND_NAME
+  - OCCURRED_ON
+  - SUPPORTS
+  - COMMUNICATED_TO
+  - ADDRESSED_IN
+  - NOTIFIES
+  - INVOLVES
+  # Cross-document co-occurrence edges added by post_kg_rules
+  - CO_MENTIONED_IN
+  - CO_APPEARED_IN
+  - CO_MENTIONED_DRUG
+  - SAME_INDUSTRY
+  - SAME_CASE
+
+category_to_kg0_labels:
+  # Primary labels are derived dynamically from the DB's top_category column
+  # (kg0_from_db.resolve_labels). The values listed here are the labels
+  # that actually exist in the current opioid graph; ALIGN's resolution
+  # first looks up a category in this table, then falls back to whatever
+  # live labels match the hint string.
+  PERSON:                 [Person, Employee, Executive, Manager, Author,
+                           Physician, HealthcareProfessional, Customer]
+  ORGANIZATION:           [Organization, Company, PharmaceuticalCompany,
+                           LegalEntity, GovernmentBody, Department, BusinessUnit,
+                           Subsidiary, ParentCompany, BusinessServicesCompany]
+  COLLECTION:             [Collection]
+  DOCUMENT:               [Document]
+  PAGE:                   [Page]
+  # Risk / harm findings — the LLM does not emit a bare "Risk" label,
+  # adverse events and risk factors are the closest equivalents.
+  RISK_FINDING:           [AdverseEvent, AdverseEffect, RiskFactor,
+                           PolicyViolation, Crime, RegulatoryAction]
+  STRATEGY:               [Action, Program, Method, Intervention,
+                           BusinessConcept, FinancialPlan]
+  # No bare :Claim label exists — claims surface as DomainEntity /
+  # BusinessConcept nodes linked to Documents via HAS_CLAIM.
+  CLAIM:                  [BusinessConcept, DomainEntity, Concept]
+  EVENT:                  [Event, Meeting, Conference, Presentation, LegalEvent,
+                           TransactionEvent]
+  TOPIC:                  [Concept, BusinessConcept, ClinicalConcept, LegalConcept,
+                           DomainEntity, ClinicalEntity]
+  POLICY:                 [Policy, Regulation, CodeOfFederalRegulations,
+                           RegulatoryEntity, LegalConcept]
+  FRAMING:                [Concept, BusinessConcept, DomainEntity]
+  CONCEPT:                [Concept, BusinessConcept, ClinicalConcept, LegalConcept,
+                           DomainEntity, ClinicalEntity, FinancialConcept]
+  LOCATION:               [Location, City, State, StreetAddress, Facility, Office]
+  PRODUCT:                [Product, Drug, PrescriptionDrug, PrescriptionDrugBrand,
+                           GenericDrug, Opioid, DrugClass, DrugFormulation, Molecule]
+  ROLE:                   [Role, JobTitle, Occupation, Executive, Manager, Author,
+                           Physician]
+  POPULATION:             [Population, PatientGroup, EmployeeGroup,
+                           AuthorizedPerson, GeneralPopulation]
+  FUNCTION:               [Department, BusinessUnit, Program]
+  TEXT_SPAN:              []    # synthesized at extraction time, no KG0 label
+  EDIT_PROPOSAL:          []    # synthesized
+  ACTION_ITEM:            [Action]
+  NARRATIVE:              [Concept, BusinessConcept, DomainEntity]
+  VISIBILITY_LEVEL:       []    # synthesized
+  LEGAL_INSTRUMENT:       [Policy, Regulation, CodeOfFederalRegulations, LegalConcept]
+  TEMPORAL_UNCERTAINTY:   []    # metadata only
+
+edge_type_aliases:
+  # User-facing relationship verbs -> concrete KG0 edge types. Only edges
+  # listed in the edge_types block above may appear as values here; any
+  # value referring to a rel that no longer exists in the graph (e.g. the
+  # old HAS_CONTACT / HAS_DECISION / HAS_PROCEDURE / MENTIONS_HEALTH) is
+  # silently ignored by ALIGN.
+  AUTHORED:               [AUTHORED_BY]
+  AUTHORED_BY:            [AUTHORED_BY]
+  MENTIONS:               [MENTIONS_PERSON, MENTIONS_ORG, MENTIONS_DRUG,
+                           MENTIONS_PRODUCT, MENTIONS_DATE, MENTIONS_LOCATION_IN_TEXT]
+  EMPLOYED_BY:            [WORKS_FOR, REPORTS_TO]
+  AFFILIATED_WITH:        [AFFILIATED_WITH, WORKS_FOR, SUBSIDIARY_OF, PART_OF]
+  RECEIVED_BY:            [SENT_TO, CC_TO, FORWARDED_TO]
+  PARTICIPATED_IN:        [SENT_TO, CC_TO, AUTHORED_BY, PRESENTED_AT, ENROLLED_IN]
+  DISCUSSED:              [HAS_CLAIM, HAS_RISK, HAS_REQUIREMENT, HAS_EVENT, HAS_METRIC,
+                           CONCERNS, ADDRESSED_IN]
+  SUPPORTS:               [SUPPORTS, HAS_CLAIM, HAS_RISK, HAS_REQUIREMENT, HAS_EVENT,
+                           HAS_METRIC, CITES]
+  REFERENCES:             [CITES, REFERENCES, HAS_ABBREVIATION]
+  CONTAINS:               [CONTAINS_DOCUMENTS, HAS_PAGE, HAS_IDENTIFIER, CONTAINS, PART_OF]
+  ABOUT:                  [HAS_CLAIM, HAS_RISK, HAS_REQUIREMENT, HAS_EVENT, HAS_METRIC,
+                           HAS_PAGE, HAS_IDENTIFIER, CONCERNS, ADDRESSED_IN,
+                           MENTIONS_PERSON, MENTIONS_ORG, MENTIONS_DRUG, MENTIONS_PRODUCT,
+                           MENTIONS_DATE, MENTIONS_LOCATION_IN_TEXT, CITES]
+  EVIDENCED_BY:           [HAS_PAGE, HAS_IDENTIFIER, HAS_CLAIM, HAS_RISK, HAS_REQUIREMENT,
+                           HAS_EVENT, HAS_METRIC, CITES]
+  QUOTES_SPAN:            [HAS_PAGE, HAS_IDENTIFIER]
+  HAS_TIME:               [MENTIONS_DATE, HAS_EVENT, OCCURRED_ON]
+  INVOLVED_IN:            [HAS_REQUIREMENT, HAS_RISK, HAS_EVENT, HAS_METRIC, INVOLVES,
+                           ENROLLED_IN]
+  RESULTED_IN:            [HAS_REQUIREMENT, HAS_RISK, HAS_EVENT, HAS_ADVERSE_EFFECT]
+  CONTRADICTS:            []
+  INFLUENCED:             [HAS_REQUIREMENT, HAS_RISK, HAS_EVENT, CITES, GOVERNED_BY]
+  QUALIFIES:              [HAS_REQUIREMENT, HAS_IDENTIFIER, CLASSIFIED_AS, LABELED_AS]
+  FRAMED_AS:              [HAS_CLAIM, HAS_RISK, HAS_REQUIREMENT, HAS_PAGE, LABELED_AS]
+  INTERNALLY_STATED_AS:   [HAS_CLAIM, HAS_PAGE, COMMUNICATED_TO]
+  PUBLICLY_STATED_AS:     [HAS_CLAIM, HAS_PAGE, CITES, PUBLISHED_BY, COMMUNICATED_TO]
+
+category_hierarchy:
+  AGENT:
+    - PERSON
+    - ORGANIZATION
+    - ROLE
+    - POPULATION
+    - FUNCTION
+  ARTIFACT:
+    # With per-page segmentation, "artifact family" is a PAGE attribute
+    # rather than a Document attribute. A single PDF can mix several
+    # page families (~63% of documents in the opioid corpus are mixed).
+    - DOCUMENT
+    - PAGE
+  SYNTHESIZED:
+    - TEXT_SPAN
+    - EDIT_PROPOSAL
+    - VISIBILITY_LEVEL
+    - TEMPORAL_UNCERTAINTY
+
+artifact_families:
+  # Canonical key -> Page.label value produced by the segmentation stage
+  # (labels.json). These are the five categories observed in the corpus.
+  # Intent parsers that still speak in old family names (THREAD, PDF,
+  # ARTIFACT_PRESENTATION_SLIDE) must be resolved here too.
+  ARTIFACT_EMAIL:               email
+  ARTIFACT_THREAD:              email          # threads are sequences of email pages
+  ARTIFACT_DOCUMENT:            document
+  ARTIFACT_PDF:                 document       # PDFs without a more specific page label
+  ARTIFACT_SPREADSHEET:         spreadsheet
+  ARTIFACT_PRESENTATION:        presentation
+  ARTIFACT_PRESENTATION_SLIDE:  presentation
+  ARTIFACT_TEXT:                text           # plaintext / minimal-content pages
+
+slot_type_mappings:
+  WHO:
+    compatible_categories:
+      - PERSON
+      - ORGANIZATION
+      - ROLE
+      - FUNCTION
+    compatible_role_keywords:
+      - speaker
+      - author
+      - actor
+      - participant
+      - employee
+      - person
+      - proposer
+      - recruiter
+      - presenter
+      - pusher
+
+  WHAT:
+    compatible_categories:
+      - STRATEGY
+      - POLICY
+      - CLAIM
+      - CONCEPT
+      - FRAMING
+      - NARRATIVE
+      - ACTION_ITEM
+    compatible_role_keywords:
+      - strategy
+      - plan
+      - policy
+      - claim
+      - action
+      - suppression
+      - messaging
+      - workaround
+      - content
+
+  WHEN:
+    compatible_categories:
+      - EVENT
+      - TEMPORAL_UNCERTAINTY
+    compatible_role_keywords:
+      - when
+      - date
+      - time
+      - temporal
+
+  WHERE:
+    compatible_categories:
+      - LOCATION
+    compatible_role_keywords:
+      - where
+      - location
+      - place
+      - geographic
+
+  WHY:
+    compatible_categories: []
+    compatible_role_keywords:
+      - why
+      - rationale
+      - justification
+      - reason
+      - motive
+
+  HOW:
+    compatible_categories:
+      - EDIT_PROPOSAL
+    compatible_role_keywords:
+      - how
+      - method
+      - mechanism
+      - process
+      - edit
+      - response
+      - disseminator
+
+  EVIDENCE:
+    compatible_categories:
+      - TEXT_SPAN
+      - RISK_FINDING
+    compatible_role_keywords:
+      - evidence
+      - span
+      - quote
+      - text
+      - phrase
+      - excerpt
+
+  OUTCOME:
+    compatible_categories:
+      - STRATEGY
+      - ACTION_ITEM
+    compatible_role_keywords:
+      - outcome
+      - decision
+      - result
+      - consequence
+      - deployment
+      - final

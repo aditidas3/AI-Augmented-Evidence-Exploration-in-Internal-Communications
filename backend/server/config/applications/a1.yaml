@@ -1,0 +1,41 @@
+application_id: a1
+label: Industry Documents Research
+collections:
+  - idl_all
+filters:
+  include:
+    - industry
+    - type
+    - brand
+    - drug
+    - chemical
+    - food
+    - subject
+    - availability
+    - date
+  ordering:
+    - industry
+    - type
+    - brand
+    - drug
+    - chemical
+    - food
+    - subject
+    - availability
+    - date
+  groups:
+    basic:
+      label: Common filters
+      filters:
+        - industry
+        - type
+        - date
+    advanced:
+      label: Additional filters
+      filters:
+        - brand
+        - drug
+        - chemical
+        - food
+        - subject
+        - availability

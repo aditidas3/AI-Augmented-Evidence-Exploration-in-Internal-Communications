@@ -1,0 +1,33 @@
+INVESTIGATOR ANSWER
+============================================================
+
+WHO: Edward Bratton WHAT: Virtual team member town hall WHAT: ID image WHAT: Walgreens WHAT: professional judgment WHEN: 2010-06-28 HOW: Walgreen Co. HOW: Michelle Jelinek HOW: Manager - Pharmaceutical Integrity EVIDENCE: Targeted drugs for GFD email Limitations: 1 issue(s) affect interpretation.
+
+CITATIONS
+------------------------------------------------------------
+  0fa631e2e814
+  814a70af1e71
+  95481d612aef
+  f1e5d829d11c
+  wit-0b2e33b18359
+  wit-2402e8ddc499
+  wit-2995aa1f745d
+  wit-3f55b761baae
+  wit-56b79f138a27
+  wit-5cf20b25e819
+  wit-7b3397368faa
+  wit-916c77383a75
+  wit-c534c5a313b1
+  wit-c5681c14d055
+
+EVIDENCE CHAIN (AUDIT TRAIL)
+------------------------------------------------------------
+  TRACE: compile_tracespec
+  TRACE: extract_slot_candidates
+  TRACE: map_transform
+  TRACE: assemble_chains
+  TRACE: rank_chains
+  TRACE: commit_and_package
+  CONFLICT: 1 conflict edge(s) considered
+  CONSTRUCT: selected chain b1789157-2d54-5988-9634-e8df78295682
+  EXPLAIN: generated explanation with 10 citation tether(s)

@@ -60,4 +60,3 @@ python validator/corrector.py --pipeline --intent intent_analysis_results.json
 ** Default outputs**
 - `output/corrected_intent.json`
 - `output/correction_log.json`
-- `output/revalidated_report.json`

@@ -1,0 +1,14 @@
+# Runtime dependencies for the labeler package only.
+
+# Core CLI, config, schemas, and PDF rendering.
+python-dotenv==1.2.1
+pydantic==2.12.5
+PyMuPDF==1.27.1
+pillow==12.1.1
+img2pdf==0.6.3
+
+# PDF OCR path used by Stage 2 for rendered PDF pages.
+olmocr[gpu] --extra-index-url https://download.pytorch.org/whl/cu128
+
+# Optional, intentionally not installed by default:
+# - qwen-local provider: transformers, torch, accelerate

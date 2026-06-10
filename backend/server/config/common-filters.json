@@ -1,0 +1,28 @@
+{
+  "filters": {
+    "date": {
+      "label": "Date",
+      "kind": "hierarchy",
+      "selection": "multi",
+      "common": true,
+      "default_group": "basic",
+      "description": "Document date or date bucket"
+    },
+    "type": {
+      "label": "Type",
+      "kind": "enum",
+      "selection": "multi",
+      "common": true,
+      "default_group": "basic",
+      "description": "Document type"
+    },
+    "availability": {
+      "label": "Availability",
+      "kind": "enum",
+      "selection": "multi",
+      "common": true,
+      "default_group": "advanced",
+      "description": "Access or availability state"
+    }
+  }
+}
