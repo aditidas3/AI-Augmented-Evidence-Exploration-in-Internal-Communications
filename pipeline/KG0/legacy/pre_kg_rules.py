@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import argparse
-import rule_engine
+import Evidence_Exploration.pipeline.KG0.legacy.rule_engine as rule_engine
 
 
 # ================================================================
