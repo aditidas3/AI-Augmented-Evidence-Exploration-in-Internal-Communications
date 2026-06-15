@@ -1,236 +1,322 @@
-# AI-Augmented Evidence Exploration for Discovering Latent Corporate Strategies in Internal Communications
+# AIDE - AI-Driven Evidence Exploration
 
-## Overview
-
-Investigating corporate behavior across large document collections traditionally requires researchers to manually review thousands of files. This project automates that process by extracting and connecting people, organizations, topics, products, and legal frameworks from the corpus into a structured knowledge graph, surfaced through an interactive research dashboard.
-
-## Team
-This project is being built in collaboration with Advanced Database and Intelligence Lab (ADIL).
+A pipeline that transforms raw documents into a queryable knowledge graph, enabling researchers to explore entities, relationships, and evidence chains across large document corpora through interactive dashboard.
 
 ---
 
-## Project Design
+## Table of Contents
 
-Documents are collected and made into JSON items to process them into a baseline Knowledge Graph. User questions are entered through the Dashboard and processed into a structured intent JSON object. Backend operators are run to extract evidence based on the question and results are returned to the dashboard for the user.
+1. [Project Overview](#project-overview)
+2. [Architecture](#architecture)
+3. [Document Preprocessing - Labeler](#document-preprocessing--labeler)
+   - [Stage 1: Page Classification](#stage-1-page-classification)
+   - [Stage 2: Entity and Relationship Extraction](#stage-2-entity-and-relationship-extraction)
+4. [KG0 - Baseline Knowledge Graph](#kg0--baseline-knowledge-graph)
+   - [Graph Construction](#graph-construction)
+   - [Post-KG Validation](#post-kg-validation)
+   - [Entity Resolution](#entity-resolution)
+   - [Drug Node Enrichment](#drug-node-enrichment)
+5. [Intent Object](#intent-object--)
+   - [Validation](#validation)
+   - [Correction](#correction)
+6. [Reasoning Pipeline - Five Operators](#reasoning-pipeline--five-operators)
+   - [ALIGN](#align)
+   - [TRACE](#trace)
+   - [CONFLICT](#conflict)
+   - [CONSTRUCT](#construct)
+   - [EXPLAIN](#explain)
+7. [Data Model](#data-model)
+7. [Tech Stack](#tech-stack)
+8. [Setup and Installation](#setup-and-installation)
+9. [Running the Pipeline](#running-the-pipeline)
+
+---
+
+## Project Overview
+
+Corporate litigation document corpora — spanning emails, memos, research reports, contracts, and legal filings — contain critical relational evidence buried across thousands of pages. This project constructs a page-anchored knowledge graph over the UCSF Industry Documents Library, enabling multi-hop evidence retrieval with full provenance tracing back to the source document and page.
+
+The pipeline was developed and validated on 50 documents and extended to 1,800 documents across five document families: PDF, email, spreadsheet, plaintext, presentation.
+
+---
+
+## Architecture
+
+```
+UCSF IDL Documents
+       │
+       ▼
+┌─────────────────────────────────┐
+│         Labeler                 │
+│  Stage 1: Page Classification   │
+│  Stage 2: Entity Extraction     │
+└────────────┬────────────────────┘
+             │
+             ▼
+┌─────────────────────────────────────────────────────┐
+│      Intermediate Database (PostgreSQL)             │
+│  collection · document · catalog · entities ·       │
+│  edges · page_labels                                │
+└────────────┬────────────────────────────────────────┘
+             │
+             ▼
+       kg0_from_db
+             │
+             ▼
+┌────────────────────┐       ┌──────────────────────┐
+│   KG0 (Neo4j Aura) │◄──────│  External Libraries  │
+│                    │       │  RxNorm · FDA Orange │
+│  post_kg_rules     │       │  Book                │
+│  resolve_operator  │       └──────────────────────┘
+└────────────┬───────┘
+             │
+             ▼
+  Five-Operator Reasoning Pipeline
+  (ALIGN · TRACE · CONFLICT · CONSTRUCT · EXPLAIN)
+             │
+             ▼
+       Dashboard (UI)
+```
+
+---
+
+## Document Preprocessing - Labeler
+
+The labeler is an offline process that processes raw documents into structured entity and relationship records. It runs once before the application starts and is computationally intensive. The pipeline supports five document families and processes them through two sequential stages.
+
+**Supported input types:**
+- PDFs - page rendering + OCR + LLM extraction
+- Text-like files (txt, csv, xml, json, html, markdown, yaml) — direct text + LLM extraction
+- Zip files - each supported member processed as its own document
+
+### Stage 1: Page Classification
+
+Each PDF page is rendered as a high-resolution PNG image. A Vision LLM receives the images in batches and classifies each page into one of five document families:
+
+| Label | Description |
+|---|---|
+| `email` | Email-style page with sender, recipient, subject |
+| `document` | General memo, report, or letter |
+| `spreadsheet` | Tabular or grid-structured content |
+| `presentation` | Slide-style page |
+| `text` | Plain unstructured text |
+
+Classification is stored at the **page level**, not the document level — 63% of the corpus contains mixed page types within a single PDF.
+
+**Output:** `labels.jsonl`, `labels.json` (one row per page: `page_index`, `label`, `confidence`, `rationale`, `image_path`)
+
+`labels.jsonl` is consumed directly by `kg0_from_db` via `create_pages()` to assign page family labels to Page nodes in KG0.
+
+For non-PDF files, Stage 1 is skipped and a synthetic single-page label is generated automatically.
+
+### Stage 2: Entity and Relationship Extraction
+
+Stage 2 performs the actual extraction using a structured chain of LLM calls. PDF pages, already rendered as images in Stage 1, are passed through `olmocr` (GPU-based OCR) to extract raw text, which is concatenated into a single full document text. Non-PDF files bypass OCR entirely and pass source text directly to the Text LLM.
+
+Both paths then go through the same extraction chain:
+
+1. **Entity extraction** - LLM identifies all named entities in the document and produces an entity inventory (`entities.txt`)
+2. **Wikipedia enrichment** - LLM generates contextual descriptions and disambiguations per entity (`wikipedia_enrichment.txt`)
+3. **Relationship extraction** - LLM identifies relationships between confirmed entities only (`relationship.txt`). Relationships to entities not present in the confirmed inventory are excluded, preventing hallucinated connections.
+4. **Output consolidation** - results packaged into `summary.json` and `stage2_manifest.json`
+
+Collapsing these into a single prompt was found to degrade extraction accuracy by approximately 30%, so the chain is deliberately sequential.
+
+At Stage 2, extracted text and entity outputs are also indexed into **Solr** (full-text retrieval) and **Qdrant** (vector semantic search) to support downstream query processing.
+
+**Output files:** `entities.txt`, `wikipedia_enrichment.txt`, `relationship.txt`, `summary.json`, `stage2_manifest.json`
+
+These are ingested into the intermediate PostgreSQL database as node and edge records.
+
+---
+
+## KG0 - Baseline Knowledge Graph
+
+KG0 is a page-anchored knowledge graph where every entity mention is tied to a specific page within its source document. It is constructed from the intermediate database by the `kg0_from_db` script and stored in Neo4j Aura.
+
+### Graph Construction
+
+`kg0_from_db` reads all collections, documents, catalog entries, nodes, edges, and page labels from the intermediate database, along with `labels.jsonl` from disk for page family classification, and loads them into Neo4j using idempotent MERGE operations.
+
+During construction:
+- Entity labels are derived dynamically from `top_category` (PascalCased via `kg0_utils.to_label()`) with an optional secondary label from `specific_category`
+- `"Canonical Name || ABBR"` terms are split into a canonical entity node and a linked `Abbreviation` node
+- Free-text relationship types are slugified and normalized to a canonical set via `kg0_clean.normalize_rel`
+- Records are written in batched transactions
+
+Every node carries a 12-character hex `kg_id` computed as a SHA-256 hash over a namespace and canonical input parts, ensuring that two pipeline runs against the same database snapshot produce identical graphs.
+
+**Run command:**
+```bash
+python pipeline/kg0/kg0_from_db.py \
+    --uri      bolt://127.0.0.1:7687 \
+    --user     <user> \
+    --password <password>
+```
+
+### Post-KG Validation
+
+`post_kg_rules.py` runs after graph construction and performs:
+- Structural and cardinality checks
+- Cross-document enrichments
+- Duplicate candidate detection
+
+It logs a summary of all collections, documents, entities, and edges ingested, and outputs `candidates.json` — a list of entity pairs flagged as potential duplicates, each with witness context drawn from surrounding source sentences.
+
+**Run command:**
+```bash
+python pipeline/kg0/post_kg_rules.py \
+    --uri      bolt://127.0.0.1:7687 \
+    --user     <user> \
+    --password <password>
+```
+
+### Entity Resolution
+
+`resolve_operator.py` takes `candidates.json` as input and performs LLM-based entity resolution. The LLM reads the witness context for each candidate pair and scores it between 0 and 1. Pairs scoring at or above the threshold of **0.85** are merged in the graph. Every decision is logged for human review.
+
+**Output:** `resolution_report.json`, `revalidated_report.json`
+
+**Run command:**
+```bash
+python pipeline/kg0/resolve_operator.py \
+    --candidates pipeline/kg0/results/candidates.json \
+    --uri        bolt://127.0.0.1:7687 \
+    --user       <user> \
+    --password   <password>
+```
+
+### Drug Node Enrichment
+
+`external_libs.py` runs after resolution and queries every Drug node in KG0 against the **RxNorm** and **FDA Orange Book** APIs, writing structured biomedical vocabulary data back to the graph.
+
+---
+
+## Intent Object - A structured JSON representation of what a natural language question is actually asking.
+The intent object is the contract between what the user asked and what the retrieval system does. A raw question is passed through an LLM and converted into a structured JSON object with typed slots, entities, scope, query hints, and a graph spec. Without this structure there is nothing to validate, correct, or audit.
+To validate whether our intent object is good we pass it throught validation layers and then correct it.
+
+
+### Validation 
+
+Six weighted layers score the intent against what the question actually requires:
+
+| Layer | Weight |
+|---|---|
+| Graph Spec Correctness | 25% |
+| Entity Completeness | 20% |
+| Retrieval Quality | 18% |
+| Slot Completeness | 15% |
+| Scope Correctness | 12% |
+| Internal Consistency | 10% |
+
+Verdicts: **PASS** ≥ 0.85 / **PARTIAL_PASS** 0.60–0.85 / **FAIL** < 0.60
+
+A separate **Minimality Auditor** checks for bloat and reports independently — it does not affect the score.
+
+
+### Correction
+
+`corrector.py` applies targeted fixes to a deep copy of the intent — the original is never modified. It targets all HIGH priority issues and any layer scoring below 0.65, applying fixes in dependency order. Every change is logged with before/after values. The intent is re-validated after correction and three output files are produced: corrected intent, correction log, and re-validation report.
+
+**What it fixes:** missing entities, wrong artifact types, missing slots, timestamp placeholders.  
+**What it doesn't fix:** semantically wrong but structurally valid intents.
+
+See [pipeline/intent_analyzer/README.md](pipeline/intent_analyzer/README.md) for the full intent object CLI reference.
+
+---
+
+## Reasoning Pipeline - Five Operators
+
+The five-operator pipeline runs per user query, constructing an evidence chain and reasoning graph from KG0 in response to natural language question from dashboard. Each operator reads the previous operator's output and writes its own output for the next stage.
+
+**ALIGN** Retrieves relevant artifacts from the Knowledge Graph based on the intent object. Generates entity and link hypotheses, discovers subgraphs, and produces an align bundle containing ranked subgraphs, witnesses, anchors, and mentions. This is the retrieval stage.
+
+**TRACE** Reads the align bundle and traces evidence chains across the retrieved subgraphs. Extracts slot candidates for each question slot (WHO, WHAT, WHEN, HOW, WHY, EVIDENCE), assembles and ranks chains by coverage and confidence, and writes the Evidence Graph and Reasoning Graph. A verification step runs after TRACE to confirm the graph was written correctly — if it fails the pipeline stops.
+
+**CONFLICT** Compares witnesses within each slot and detects contradictions using five rules: surface mismatch, temporal clash, supersession, negation, cross-artifact entity conflict, and reliability divergence. Writes Defeater nodes to the Reasoning Graph and marks contested Claims. The output tells CONSTRUCT which answers are disputed.
+
+**CONSTRUCT** Selects the best evidence chain from TRACE, applies confidence reductions based on Defeaters from CONFLICT, and assembles a final answer bundle. Produces findings, citations, and limitations. The synthesis confidence score is a weighted average across slots.
+
+**EXPLAIN** Reads the construct bundle and generates a human-readable investigator answer. Produces provenance narratives, conflict explanations, decision explanations, and a full citation list with tether verification. Outputs both a structured JSON bundle and a plain text report.
+
+---
+
+## Logging 
+
+The state logging system makes every stage run observable, debuggable, and auditable. As the pipeline executes, structured outcome data from all five operators - ALIGN, TRACE, CONFLICT, CONSTRUCT, and EXPLAIN - is written to a PostgreSQL database in real time, capturing what each operator produced, what the system believed after each stage, and what the orchestrator decided to do next.
+
+The system is organised into four layers: a PostgreSQL schema of five core tables (runs, operator invocations, outcome events, state snapshots, and decisions), stored functions including a bulk batch insert to minimise round trips, a Python service layer using psycopg2 with a background flush thread and queue.Queue for non-blocking writes, and per-operator typed logger classes that expose named methods so each operator logs structured records rather than raw SQL. All file paths are configured in constants.py and credentials are managed via .env.
+
+Key design principles: writes are non-blocking so operator execution is never delayed, events are append-only for a clean audit trail, operator names are stored as plain TEXT to allow new operators without schema migrations, and every run — including partial failures — is fully queryable by run ID, operator, and timestamp.
+
+See [pipeline/logger/STATE_LOGGING_README.md](pipeline/logger/STATE_LOGGING_README.md) for the logger CLI reference.
+
+---
+
+
+## Data Model
+
+### Node Types
+
+| Node | Key Properties |
+|---|---|
+| `Collection` | kg_id, name |
+| `Document` | kg_id, document_id, name, collection, batesNumber, documentDate, industry, documentType |
+| `Page` | kg_id, document_id, page_index, label, confidence |
+| `Entity` | kg_id, name, top_category, specific_category, confidence, witness, wikipedia_url, wikipedia_category |
+| `Abbreviation` | kg_id, name, expanded_form |
+
+Dynamic entity labels: `top_category = "person"` + `specific_category = "employee"` → `(:Person:Employee)`. Reserved labels excluded from dynamic path: `Document`, `Collection`, `Abbreviation`.
+
+### Edge Types
+
+```
+(:Collection)-[:CONTAINS_DOCUMENTS]->(:Document)
+(:Document)-[:HAS_PAGE]->(:Page)
+(:Page)-[:MENTIONS_PERSON|MENTIONS_ORG|MENTIONS_DRUG|…]->(:Entity)
+(:Entity)-[<canonical rel>]->(:Entity)
+(:Entity)-[:HAS_ABBREVIATION]->(:Abbreviation)
+```
+
+No page-to-page edges — structural adjacency is implied by `page_index` ordering under the same Document.
 
 ---
 
 ## Tech Stack
 
-- **Neo4j** — graph database
-- **Python** — pipeline scripts
-- **PostgreSQL** — project database, logging and audit trail
-- **LLM API** — LLM-based schema design, entity resolution
+| Component | Technology |
+|---|---|
+| Pipeline orchestration | Python |
+| Document OCR | olmocr (GPU-based) |
+| Page classification | Vision LLM |
+| Entity extraction | Text LLM (OpenRouter / Qwen) |
+| Entity resolution | DeepSeek V4 |
+| Intermediate database | PostgreSQL |
+| Full-text search | Solr |
+| Vector search | Qdrant |
+| Knowledge graph | Neo4j Aura |
+| Drug enrichment | RxNorm API, FDA Orange Book API |
+| Version control | GitHub |
 
 ---
 
-## Components
-
-### Intent Analyzer - Intent Validation & Correction Pipeline
-
-A pipeline that validates structured JSON intent objects generated from natural language questions, scores them across six independent layers, and optionally applies automatic corrections.
-
----
-
-#### Overview
-
-```
-Question + Intent Object
-        ↓
-  [Stage 1] Parse Question       → ground truth reference
-        ↓
-  [Stage 2] Validate (6 layers)  → scores + issues per layer
-        ↓
-  [Stage 3] Score & Verdict      → overall score, PASS/PARTIAL_PASS/FAIL
-        ↓
-  [Stage 4] Correct (optional)   → patched intent copy + correction log
-```
-
----
-
-#### Stage 1: Parsing the Question
-
-`question_parser.py` reads the raw question and extracts ground truth **independently** of the intent object. This becomes the reference that all validation layers check against.
-
-Extracted fields include:
-
-- Entities (canonical node type + `ENTITY_*` intent category)
-- Time range
-- Required slot types
-- Temporal constraints
-- Flags: `intentionality_required`, `cross_track_awareness_required`
-
-> Nothing here reads the intent — it only reads the question.
-
----
-
-#### Stage 2: Validation Layers
-
-Six independent layers each produce a score between `0.0` and `1.0`, plus a list of issues at `HIGH`, `MEDIUM`, or `LOW` priority.
-
-#### Scoring Formula
-
-```
-score = 1.0 - (penalty / (total_checks × 3))
-```
-
-| Priority | Penalty |
-|----------|---------|
-| HIGH     | 3       |
-| MEDIUM   | 2       |
-| LOW      | 1       |
-
-Score floors at `0.0`.
-
-#### Layer Weights
-
-| Layer                  | Weight |
-|------------------------|--------|
-| Graph Spec Correctness | 0.25   |
-| Entity Completeness    | 0.20   |
-| Retrieval Quality      | 0.18   |
-| Slot Completeness      | 0.15   |
-| Scope Correctness      | 0.12   |
-| Internal Consistency   | 0.10   |
-
-#### What Each Layer Checks
-
-**Entity Completeness** — Every entity extracted from the question exists in `EntityHints` with the correct `ENTITY_*` category; no hint uses an unrecognised category.
-
-**Scope Correctness** — Time filter matches the question's date range; artifact types are declared; scope mode is appropriate (e.g. `REQUIRE` is flagged on investigative questions as it may exclude exculpatory documents).
-
-**Retrieval Quality** — Every non-implicit entity has coverage in `query_text` or `query_expansions`; implicit constraints (intentionality, cross-track awareness) are reflected in expansions; generic terms like "compliance" or "records" are absent.
-
-**Slot Completeness** — All slot types inferred from the question are present, with special enforcement on `AWARENESS` slots for cross-track knowledge questions.
-
-**Graph Spec Correctness** — Edge validity (no self-referential edges, no causal relations on investigative questions, no raw datetimes in temporal constraints); vars reference declared `EntityHints`; concurrent temporal constraints are modeled when required.
-
-**Internal Consistency** — Cross-section alignment: slot artifact types declared in `ScopeSpec`; graph vars reference `EntityHint` surfaces; temporal entity hints fall within the declared time filter.
-
-#### Minimality Auditor
-
-A separate auditor runs cross-cutting checks for bloat:
-
-- Unused `EntityHints` with no graph var
-- Duplicate artifact types
-- Oversized diagnostic sections
-- Excessive secondary objectives
-
-Minimality findings are **reported separately and do not affect the score**.
-
----
-
-#### Stage 3: Overall Score & Verdict
-
-```
-overall = Σ (layer_score × layer_weight)
-```
-
-#### Score Verdicts
-
-| Score    | Verdict       |
-|----------|---------------|
-| ≥ 0.85   | `PASS`        |
-| ≥ 0.60   | `PARTIAL_PASS`|
-| < 0.60   | `FAIL`        |
-
-#### Minimality Verdicts
-
-| Findings | Verdict              |
-|----------|----------------------|
-| ≤ 2      | `MINIMAL`            |
-| 3–6      | `PARTIALLY_MINIMAL`  |
-| > 6      | `BLOATED`            |
-
-Issues are grouped into priority fix groups (`P0` / `P1` / `P2`) in the report output.
-
----
-
-#### Stage 4: Correction
-
-`corrector.py` applies targeted fixes to a **deep copy** of the intent. The original is never modified.
-
-#### Issue Selection
-
-Two sets of issues are selected for correction:
-
-- All `HIGH` priority issues, regardless of layer
-- All issues (any priority) from layers whose score fell **below 0.65**
-
-#### Fix Order
-
-Fixes are applied in dependency order so earlier sections are stable before later ones that reference them:
-
-```
-Entity Completeness → Scope → Retrieval → Slots → Graph Spec → Internal Consistency
-```
-
-#### Fix Behavior
-
-Each fix is surgical:
-
-| Issue | Fix |
-|-------|-----|
-| Missing `EntityHint` | Adds exactly one hint entry using `intent_category` from ground truth |
-| Wrong time filter | Replaces only `start` and `end` values |
-| Missing slot | Appends exactly one slot entry with the required `slot_type` |
-
-Every change is recorded in a `CorrectionEntry` with `before`, `after`, and `reason`. After correction, the intent is **re-validated** and the log includes the score delta and verdict change.
-
-#### `--pipeline` Flag
-
-Running `corrector.py --pipeline` executes all three stages (validate → correct → re-validate) in one shot and saves three output files:
-
-| File | Contents |
-|------|----------|
-| Corrected intent | Patched intent JSON |
-| Correction log | Per-change entries with score delta |
-| Re-validation report | Full validation output post-correction |
-
----
-
-### Pipeline Operators
-
-The pipeline runs five operators in sequence. Each operator reads the previous operator's output and writes its own output for the next stage.
-
-**ALIGN**
-Retrieves relevant artifacts from the Knowledge Graph based on the intent object. Generates entity and link hypotheses, discovers subgraphs, and produces an align bundle containing ranked subgraphs, witnesses, anchors, and mentions. This is the retrieval stage.
-
-**TRACE**
-Reads the align bundle and traces evidence chains across the retrieved subgraphs. Extracts slot candidates for each question slot (WHO, WHAT, WHEN, HOW, WHY, EVIDENCE), assembles and ranks chains by coverage and confidence, and writes the Evidence Graph and Reasoning Graph. A verification step runs after TRACE to confirm the graph was written correctly — if it fails the pipeline stops.
-
-**CONFLICT**
-Compares witnesses within each slot and detects contradictions using five rules: surface mismatch, temporal clash, supersession, negation, cross-artifact entity conflict, and reliability divergence. Writes Defeater nodes to the Reasoning Graph and marks contested Claims. The output tells CONSTRUCT which answers are disputed.
-
-**CONSTRUCT**
-Selects the best evidence chain from TRACE, applies confidence reductions based on Defeaters from CONFLICT, and assembles a final answer bundle. Produces findings, citations, and limitations. The synthesis confidence score is a weighted average across slots.
-
-**EXPLAIN**
-Reads the construct bundle and generates a human-readable investigator answer. Produces provenance narratives, conflict explanations, decision explanations, and a full citation list with tether verification. Outputs both a structured JSON bundle and a plain text report.
-
----
-
-### State Logging System
-
-A lightweight infrastructure layer that runs alongside the pipeline and records every operator run into PostgreSQL — without adding overhead to operator execution. Designed so that every metric, decision, and state transition is queryable after a run without opening any output file.
-
-**Four tables are populated per run:**
-- `exploration_run` — one row per run, stores intent, config hash, and final status
-- `operator_invocation` — one row per operator, stores timing and success/failure
-- `intermediate_outcome_event` — many rows per operator, stores individual metrics (candidate counts, confidence scores, defeater counts, latency etc.)
-- `orchestration_state_snapshot` — one row per operator, stores point-in-time pipeline state between stages
-
-Log writes are enqueued in memory and flushed to PostgreSQL by a background worker thread, so operators are never blocked waiting on database writes. All paths are defined in `constants.py` and all credentials in `.env` — nothing is hardcoded. See `state_logging/STATE_LOGGING_README.md` for full details and SQL queries.
-
----
-
-## Running the Pipeline
+## Setup and Installation
 
 ```bash
-# 1. Set intent file path in constants.py
-# 2. Fill in credentials in .env
-# 3. Run
-python pipeline.py
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-All five operators run in sequence automatically. Results are logged to PostgreSQL and the final answer is written to the explain output folder.
+Configure your environment variables:
+```bash
+NEO4J_URI=bolt://127.0.0.1:7687
+NEO4J_USER=<user>
+NEO4J_PASSWORD=<password>
+OPENROUTER_API_KEY=<key>
+```
+
+---
+
+## Team
+This project is being built in collaboration with Advanced Database and Intelligence Lab (ADIL) at UCSD.
