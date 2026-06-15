@@ -191,6 +191,7 @@ python pipeline/kg0/resolve_operator.py \
 `external_libs.py` runs after resolution and queries every Drug node in KG0 against the **RxNorm** and **FDA Orange Book** APIs, writing structured biomedical vocabulary data back to the graph.
 
 See [pipeline/KG0/CODE_WALKTHROUGH.md]([pipeline/KG0/CODE_WALKTHROUGH.md) for the full KG0 CLI reference.
+
 ---
 
 ## Intent Object - A structured JSON representation of what a natural language question is actually asking.
